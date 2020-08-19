@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/Wav2vecNet.iml" filepath="$PROJECT_DIR$/.idea/Wav2vecNet.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../fairseq/.idea/fairseq.iml" filepath="$PROJECT_DIR$/../fairseq/.idea/fairseq.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../smoothed_SE_project/.idea/smoothed_SE_project.iml" filepath="$PROJECT_DIR$/../smoothed_SE_project/.idea/smoothed_SE_project.iml" />
+      <module fileurl="file://$PROJECT_DIR$/../speechbrain/.idea/speechbrain.iml" filepath="$PROJECT_DIR$/../speechbrain/.idea/speechbrain.iml" />
+    </modules>
+  </component>
+</project>
