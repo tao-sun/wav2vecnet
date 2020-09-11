@@ -10,26 +10,29 @@
 seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
-data_folder: ./data/TIMIT
-test_clean_folder: !ref <data_folder>/clean_testset_wav_16k/
+data_folder: /home2/data/TIMIT
+test_clean_folder: !ref <data_folder>/TEST/clean
 
 output_folder: !ref ./results/TIMIT
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 enhanced_folder: !ref <output_folder>/enhanced
 
+# Wav2vec version
+wav2vec_version: 2.0
+
 # Basic parameters
-use_tensorboard: True
+use_tensorboard: False
 tensorboard_logs: !ref <output_folder>/logs/
 
 # Data files
-csv_train: !ref <data_folder>/train.csv
-csv_valid: !ref <data_folder>/valid.csv
-csv_test: !ref <data_folder>/test.csv
+csv_train: !ref <output_folder>/save/train.csv
+csv_valid: !ref <output_folder>/save/valid.csv
+csv_test: !ref <output_folder>/save/test.csv
 
 # Training Parameters
-number_of_epochs: 150
-N_batch: 10
+number_of_epochs: 1000
+N_batch: 5
 lr: 0.001
 device: 'cuda:0'
 Sample_rate: 16000

@@ -6,7 +6,6 @@ from fairseq.models.wav2vec import Wav2VecModel
 
 
 class Wav2vecNet(NN.Module):
-
     def __init__(self, filter_down=31, filter_up=5):
         super(Wav2vecNet, self).__init__()
 
