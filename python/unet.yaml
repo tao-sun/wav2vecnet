@@ -19,10 +19,10 @@ train_log: !ref <output_folder>/train_log.txt
 enhanced_folder: !ref <output_folder>/enhanced
 
 # Wav2vec version
-wav2vec_version: 2.0
+wav2vec_version: 1.0
 
 # Basic parameters
-use_tensorboard: False
+use_tensorboard: True
 tensorboard_logs: !ref <output_folder>/logs/
 
 # Data files
@@ -32,8 +32,9 @@ csv_test: !ref <output_folder>/save/test.csv
 
 # Training Parameters
 number_of_epochs: 1000
-N_batch: 5
+N_batch: 8
 lr: 0.001
+weight_decay: 0.001
 device: 'cuda:0'
 Sample_rate: 16000
 max_length: !ref <Sample_rate> * 10
@@ -161,6 +162,7 @@ compute_cost: !name:speechbrain.nnet.losses.mse_loss
 
 optimizer: !new:speechbrain.nnet.optimizers.Adam_Optimizer
     learning_rate: !ref <lr>
+    weight_decay: !ref <weight_decay>
 
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>

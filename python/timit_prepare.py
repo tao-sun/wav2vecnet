@@ -224,7 +224,7 @@ def prepare_timit(data_folder, save_folder, valid_speaker_count=2):
     # Setting ouput files
     save_csv_train = os.path.join(save_folder, TRAIN_CSV)
     save_csv_test = os.path.join(save_folder, TEST_CSV)
-    # save_csv_valid = os.path.join(save_folder, VALID_CSV)
+    save_csv_valid = os.path.join(save_folder, VALID_CSV)
 
     # Check if this phase is already done (if so, skip it)
     if skip(save_csv_train, save_csv_test):
@@ -258,7 +258,7 @@ def prepare_timit(data_folder, save_folder, valid_speaker_count=2):
     extension = [".WAV"]
     # valid_speakers = TRAIN_SPEAKERS[:valid_speaker_count]
     wav_lst_train = get_all_files(train_noisy_folder, match_and=extension)
-    create_csv(wav_lst_train, save_csv_train, train_noisy_folder, train_clean_folder)
+    create_csv(wav_lst_train, save_csv_train, train_noisy_folder, train_clean_folder, save_csv_valid)
 
     # Creating csv file for validation data
     # wav_lst_valid = get_all_files(
@@ -499,7 +499,7 @@ def skip(*filenames):
 #     logger.debug(msg)
 
 
-def create_csv(wav_lst, csv_file, noisy_folder, clean_folder):
+def create_csv(wav_lst, csv_file, noisy_folder, clean_folder, valid_csv_file=None):
     """
     Creates the csv file given a list of wav files.
 
@@ -525,13 +525,19 @@ def create_csv(wav_lst, csv_file, noisy_folder, clean_folder):
     for wav_file in wav_lst:  # ex:p203_122.wav
 
         # Example wav_file: p232_001.wav
-        snt_id = os.path.basename(wav_file)
+        snt_id = wav_file
         relative_path = os.path.relpath(wav_file, noisy_folder)
         clean_wav = os.path.join(clean_folder, relative_path)
 
         # Reading the signal (to retrieve duration in seconds)
         signal = read_wav_soundfile(wav_file)
         duration = signal.shape[0] / SAMPLERATE
+
+        clean_signal = read_wav_soundfile(clean_wav)
+        clean_duration = clean_signal.shape[0] / SAMPLERATE
+
+        if duration != clean_duration:
+            raise Exception("Different duration between noisy and clean signals, %f vs %f file: %s" % (duration, clean_duration, wav_file))
 
         # Reading the transcript
         # with open(os.path.join(txt_folder, snt_id + ".txt")) as f:
@@ -554,13 +560,33 @@ def create_csv(wav_lst, csv_file, noisy_folder, clean_folder):
         csv_lines.append(csv_line)
 
     # Writing the csv lines
-    with open(csv_file, mode="w") as csv_f:
-        csv_writer = csv.writer(
-            csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
-        )
+    if valid_csv_file is not None:
+        with open(csv_file, mode="w") as csv_f, open(
+                valid_csv_file, mode="w") as valid_csv_f:
+            csv_writer = csv.writer(
+                csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
+            )
+            valid_csv_writer = csv.writer(
+                valid_csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
+            )
 
-        for line in csv_lines:
-            csv_writer.writerow(line)
+            for i, line in enumerate(csv_lines):
+                if i == 0:
+                    csv_writer.writerow(line)
+                    valid_csv_writer.writerow(line)
+                else:
+                    if i % 10 != 0:
+                        csv_writer.writerow(line)
+                    else:
+                        valid_csv_writer.writerow(line)
+    else:
+        with open(csv_file, mode="w") as csv_f:
+            csv_writer = csv.writer(
+                csv_f, delimiter=",", quotechar='"', quoting=csv.QUOTE_MINIMAL
+            )
+
+            for line in csv_lines:
+                csv_writer.writerow(line)
 
     logger.debug(f"{csv_file} successfully created!")
 

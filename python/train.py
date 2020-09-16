@@ -5,6 +5,7 @@ import sys
 
 import torch
 import torchaudio
+torchaudio.set_audio_backend("soundfile")
 from joblib import Parallel, delayed
 from pesq import pesq
 from torch import FloatTensor, LongTensor
@@ -83,6 +84,26 @@ def multiprocess_evaluation(pred_wavs, target_wavs, lengths):
         for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
     )
     return pesq_scores
+
+
+def snr(pred_wavs, target_wavs, scale=True):
+    def rms(wavs):
+        return math.sqrt(torch.mean(torch.pow(wavs, 2)))
+
+    if scale:
+        target_wavs = target_wavs - torch.mean(target_wavs, 1, True).expand_as(target_wavs)
+        pred_wavs = pred_wavs - torch.mean(pred_wavs, 1, True).expand_as(pred_wavs)
+
+        target_wavs_max = torch.max(torch.abs(target_wavs), 1, True)[0]
+        pred_wavs_max = torch.max(torch.abs(pred_wavs), 1, True)[0]
+        pred_wavs = pred_wavs * (target_wavs_max / pred_wavs_max).expand_as(pred_wavs)
+
+    noise_wavs = pred_wavs.float() - target_wavs.float()
+    rms_signal = rms(target_wavs.float())
+    rms_noise = rms(noise_wavs)
+
+    snr_db = 20 * math.log(rms_signal/rms_noise) / math.log(10.)
+    return snr_db
 
 
 if params.wav2vec_version == 1.0:
@@ -166,6 +187,8 @@ class SEBrain(sb.core.Brain):
                 target_wavs.cpu().numpy(),
                 lens.cpu().numpy(),
             )
+            stats['snr'] = snr(predictions, target_wavs, False)
+            stats['snr_scaled'] = snr(predictions, target_wavs)
             stats["pesq"] = pesq_scores
             stats["stoi"] = -stoi_loss(predictions, target_wavs, lens)
 
@@ -203,8 +226,12 @@ prepare_timit(
     save_folder=params.save_folder
 )
 train_set = params.train_loader()
-# valid_set = params.valid_loader()
+print("train set size: %d" % len(train_set.dataset))
+# print(train_set.dataset.data_dict["data_list"])
+valid_set = params.valid_loader()
+print("valid set size: %d" % len(valid_set.dataset))
 test_set = params.test_loader()
+print("test set size: %d" % len(test_set.dataset))
 first_x, first_y = next(iter(train_set))
 
 se_brain = SEBrain(
@@ -213,7 +240,7 @@ se_brain = SEBrain(
 
 # Load latest checkpoint to resume training
 params.checkpointer.recover_if_possible()
-se_brain.fit(params.epoch_counter, train_set, test_set)
+se_brain.fit(params.epoch_counter, train_set, valid_set)
 
 # Load best checkpoint for evaluation
 params.checkpointer.recover_if_possible(max_key="pesq_score")
