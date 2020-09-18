@@ -525,7 +525,7 @@ def create_csv(wav_lst, csv_file, noisy_folder, clean_folder, valid_csv_file=Non
     for wav_file in wav_lst:  # ex:p203_122.wav
 
         # Example wav_file: p232_001.wav
-        snt_id = wav_file
+        snt_id = "_".join(wav_file.split("/")[6:])
         relative_path = os.path.relpath(wav_file, noisy_folder)
         clean_wav = os.path.join(clean_folder, relative_path)
 

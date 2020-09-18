@@ -162,7 +162,6 @@ compute_cost: !name:speechbrain.nnet.losses.mse_loss
 
 optimizer: !new:speechbrain.nnet.optimizers.Adam_Optimizer
     learning_rate: !ref <lr>
-    weight_decay: !ref <weight_decay>
 
 checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     checkpoints_dir: !ref <save_folder>

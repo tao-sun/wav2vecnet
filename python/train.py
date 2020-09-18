@@ -125,32 +125,33 @@ def compute_features(x):
         return compute_features2(x)
 
 
-def compute_features1(x):
+def compute_features1(wavs):
     feature_extractor = wav2vec.feature_extractor
 
     features = []
-    x = x.unsqueeze(1)
+    wavs = wavs.unsqueeze(1)
+    print("wavs size: %s" % str(wavs.size()))
     for i, conv in enumerate(feature_extractor.conv_layers):
-        residual = x
-        x = conv(x)
-        if feature_extractor.skip_connections and x.size(1) == residual.size(1):
-            tsz = x.size(2)
+        residual = wavs
+        wavs = conv(wavs)
+        if feature_extractor.skip_connections and wavs.size(1) == residual.size(1):
+            tsz = wavs.size(2)
             r_tsz = residual.size(2)
             residual = residual[..., :: r_tsz // tsz][..., :tsz]
-            x = (x + residual) * feature_extractor.residual_scale
-        features.append(x)
+            wavs = (wavs + residual) * feature_extractor.residual_scale
+        features.append(wavs)
 
     return features
 
 
-def compute_features2(x):
+def compute_features2(wavs):
     feature_extractor = wav2vec2.feature_extractor
 
     features = []
-    x = x.unsqueeze(1)
+    wavs = wavs.unsqueeze(1)
     for i, conv in enumerate(feature_extractor.conv_layers):
-        x = conv(x)
-        features.append(x)
+        wavs = conv(wavs)
+        features.append(wavs)
 
     return features
 
