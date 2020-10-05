@@ -5,7 +5,7 @@ import h5py
 from speechbrain.utils.data_utils import get_all_files
 
 from tqdm import tqdm
-from utils import load
+from waveunet.utils import load
 
 from speechbrain.data_io.data_io import (
     read_wav_soundfile,

@@ -111,11 +111,15 @@ if params.wav2vec_version == 1.0:
     wav2vec = Wav2VecModel.build_model(cp['args'], task=None)
     wav2vec.load_state_dict(cp['model'])
     wav2vec.to(torch.device(params.device))
+    for param in wav2vec.parameters():
+        param.requires_grad = False
 elif params.wav2vec_version == 2.0:
     cp = torch.load('./data/pretrained/libri960_big.pt')
     wav2vec2 = Wav2Vec2Model.build_model(cp['args'])
     wav2vec2.load_state_dict(cp['model'])
     wav2vec2.to(torch.device(params.device))
+    for param in wav2vec2.parameters():
+        param.requires_grad = False
 
 
 def compute_features(x):
@@ -130,7 +134,6 @@ def compute_features1(wavs):
 
     features = []
     wavs = wavs.unsqueeze(1)
-    print("wavs size: %s" % str(wavs.size()))
     for i, conv in enumerate(feature_extractor.conv_layers):
         residual = wavs
         wavs = conv(wavs)
@@ -156,6 +159,21 @@ def compute_features2(wavs):
     return features
 
 
+# Prepare data
+prepare_timit(
+    data_folder=params.data_folder,
+    save_folder=params.save_folder
+)
+
+train_set = params.train_loader()
+print("train set size: %d" % len(train_set.dataset))
+# print(train_set.dataset.data_dict["data_list"])
+valid_set = params.valid_loader()
+print("valid set size: %d" % len(valid_set.dataset))
+test_set = params.test_loader()
+print("test set size: %d" % len(test_set.dataset))
+
+
 class SEBrain(sb.core.Brain):
     def compute_forward(self, x, stage="train", init_params=False):
         ids, wavs, lens = x
@@ -178,7 +196,7 @@ class SEBrain(sb.core.Brain):
         for i in range(len(predicted_features)):
             feature_loss += params.compute_cost(predicted_features[i], target_features[i])
 
-        loss = feature_loss
+        loss = 0.5 * mse_loss + 0.5 * feature_loss
 
         stats = {}
         if stage != "train":
@@ -220,19 +238,17 @@ class SEBrain(sb.core.Brain):
             meta={"pesq_score": pesq_score}, max_keys=["pesq_score"],
         )
 
+        if epoch % 10 == 0:
+            # Load best checkpoint for evaluation
+            params.checkpointer.recover_if_possible(max_key="pesq_score")
+            test_stats = self.evaluate(test_set)
+            params.train_logger.log_stats(
+                stats_meta={"Epoch loaded": params.epoch_counter.current},
+                test_stats=test_stats,
+            )
+            params.checkpointer.recover_if_possible()
 
-# Prepare data
-prepare_timit(
-    data_folder=params.data_folder,
-    save_folder=params.save_folder
-)
-train_set = params.train_loader()
-print("train set size: %d" % len(train_set.dataset))
-# print(train_set.dataset.data_dict["data_list"])
-valid_set = params.valid_loader()
-print("valid set size: %d" % len(valid_set.dataset))
-test_set = params.test_loader()
-print("test set size: %d" % len(test_set.dataset))
+
 first_x, first_y = next(iter(train_set))
 
 se_brain = SEBrain(
