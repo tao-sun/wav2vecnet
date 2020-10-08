@@ -35,7 +35,6 @@ lr: 0.001
 weight_decay: 0.001
 device: 'cuda:0'
 Sample_rate: 16000
-max_length: !ref <Sample_rate> * 10
 
 output_size: 1
 model: !new:waveunet.Waveunet
@@ -50,16 +49,16 @@ train_dataset: !new:data.SeparationDataset
     hdf_file: !ref <hdf5_train>
     sr: !ref <Sample_rate>
     channels: 1
-    random_hops: True
+    random_hops: False
 
 valid_dataset: !new:data.SeparationDataset
-    hdf_file: !ref <hdf5_test>
+    hdf_file: !ref <hdf5_valid>
     sr: !ref <Sample_rate>
     channels: 1
     random_hops: False
 
 test_dataset: !new:data.SeparationDataset
-    hdf_file: !ref <hdf5_valid>
+    hdf_file: !ref <hdf5_test>
     sr: !ref <Sample_rate>
     channels: 1
     random_hops: False
