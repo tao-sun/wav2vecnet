@@ -219,7 +219,7 @@ class SEBrain(sb.core.Brain):
                     # torchaudio.save(
                     #     enhance_path, pred_wav[: int(length)].to("cpu"), 16000
                     # )
-                    sf.write(enhance_path, pred_wav[: int(length)].to("cpu"), 16000)
+                    sf.write(enhance_path, pred_wav[: int(length)].to("cpu"), params.Sample_rate)
 
         return loss, stats
 
