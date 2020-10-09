@@ -122,8 +122,8 @@ class EvaluationDataset(Dataset):
         clean_length = self.hdf_dataset[str(index)].attrs["clean_length"]
         name = self.hdf_dataset[str(index)].attrs["ID"]
 
-        audio = self.hdf_dataset[str(index)]["noisy"].value
-        clean = self.hdf_dataset[str(index)]["clean"].value
+        audio = self.hdf_dataset[str(index)]["noisy"][()]
+        clean = self.hdf_dataset[str(index)]["clean"][()]
 
         output_shift = self.shapes["output_frames"]
 
@@ -144,10 +144,10 @@ class EvaluationDataset(Dataset):
         # Iterate over mixture magnitudes, fetch network prediction
         examples = [audio[:, target_start_pos:target_start_pos + self.shapes["input_frames"]]
                     for target_start_pos in range(0, target_outputs, self.shapes["output_frames"])]
-        targets = [clean[:, target_start_pos:target_start_pos + self.shapes["input_frames"]]
-                   for target_start_pos in range(0, target_outputs, self.shapes["output_frames"])]
+        # targets = [clean[:, target_start_pos:target_start_pos + self.shapes["input_frames"]]
+        #            for target_start_pos in range(0, target_outputs, self.shapes["output_frames"])]
 
-        return [name, np.array(examples), audio_length], [name, np.array(targets), clean_length]
+        return [name, np.array(examples), audio_length], [name, clean, clean_length]
 
     def __len__(self):
         if self.hdf_dataset is None:
