@@ -39,6 +39,8 @@ class SeparationDataset(Dataset):
         audio_idx = self.start_pos.bisect_right(index)
         if audio_idx > 0:
             index = index - self.start_pos[audio_idx - 1]
+
+        name = self.hdf_dataset[str(index)].attrs["ID"]
         # Check length of audio signal
         audio_length = self.hdf_dataset[str(audio_idx)].attrs["length"]
         clean_length = self.hdf_dataset[str(audio_idx)].attrs["clean_length"]
@@ -78,7 +80,7 @@ class SeparationDataset(Dataset):
         if pad_front > 0 or pad_back > 0:
             clean_audio = np.pad(clean_audio, [(0, 0), (pad_front, pad_back)], mode="constant", constant_values=0.0)
 
-        return audio, clean_audio
+        return [name, audio, audio_length], [name, clean_audio, clean_length]
 
     def __len__(self):
         if self.hdf_dataset is None:
@@ -98,4 +100,63 @@ class SeparationDataset(Dataset):
         return self.length
 
 
+class EvaluationDataset(Dataset):
+    def __init__(self, hdf_file, sr, channels):
 
+        super(EvaluationDataset, self).__init__()
+
+        self.sr = sr
+        self.hdf_file = hdf_file
+        self.channels = channels
+        self.shapes = None
+        self.hdf_dataset = None
+
+    def set_shapes(self, shapes):
+        self.shapes = shapes
+
+    def __getitem__(self, index):
+        if self.hdf_dataset is None:
+            self.hdf_dataset = h5py.File(self.hdf_file, 'r')
+
+        audio_length = self.hdf_dataset[str(index)].attrs["length"]
+        clean_length = self.hdf_dataset[str(index)].attrs["clean_length"]
+        name = self.hdf_dataset[str(index)].attrs["ID"]
+
+        audio = self.hdf_dataset[str(index)]["noisy"].value
+        clean = self.hdf_dataset[str(index)]["clean"].value
+
+        output_shift = self.shapes["output_frames"]
+
+        pad_back = audio.shape[1] % output_shift
+        pad_back = 0 if pad_back == 0 else output_shift - pad_back
+        if pad_back > 0:
+            audio = np.pad(audio, [(0, 0), (0, pad_back)], mode="constant", constant_values=0.0)
+            clean = np.pad(clean, [(0, 0), (0, pad_back)], mode="constant", constant_values=0.0)
+
+        target_outputs = audio.shape[1]
+
+        # Pad mixture across time at beginning and end so that neural network can make prediction at the beginning and end of signal
+        pad_front_context = self.shapes["output_start_frame"]
+        pad_back_context = self.shapes["input_frames"] - self.shapes["output_end_frame"]
+        audio = np.pad(audio, [(0, 0), (pad_front_context, pad_back_context)], mode="constant", constant_values=0.0)
+        clean = np.pad(clean, [(0, 0), (pad_front_context, pad_back_context)], mode="constant", constant_values=0.0)
+
+        # Iterate over mixture magnitudes, fetch network prediction
+        examples = [audio[:, target_start_pos:target_start_pos + self.shapes["input_frames"]]
+                    for target_start_pos in range(0, target_outputs, self.shapes["output_frames"])]
+        targets = [clean[:, target_start_pos:target_start_pos + self.shapes["input_frames"]]
+                   for target_start_pos in range(0, target_outputs, self.shapes["output_frames"])]
+
+        return [name, np.array(examples), audio_length], [name, np.array(targets), clean_length]
+
+    def __len__(self):
+        if self.hdf_dataset is None:
+            with h5py.File(self.hdf_file, "r") as f:
+                if f.attrs["sr"] != self.sr or \
+                        f.attrs["channels"] != self.channels:
+                    raise ValueError(
+                        "Tried to load existing HDF file, but sampling rate and channel are not as expected. "
+                        "Did you load an out-dated HDF file?")
+
+                self.length = len(f)
+        return self.length

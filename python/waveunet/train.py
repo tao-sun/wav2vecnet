@@ -96,9 +96,11 @@ def snr(pred_wavs, target_wavs, scale=True):
 
 
 def evaluate(hdf_file, model, write=False):
-    stats = {}
+    dataset_stats = {}
     with h5py.File(hdf_file, "r") as f:
         for idx in tqdm(range(len(f))):
+            stats = {}
+
             audio_length = f[str(idx)].attrs["length"]
             clean_length = f[str(idx)].attrs["clean_length"]
 
@@ -117,6 +119,14 @@ def evaluate(hdf_file, model, write=False):
             stats["pesq"] = pesq_scores
             stats["stoi"] = -stoi_loss(enhanced, clean, torch.Tensor([clean_length])).unsqueeze(0)
 
+            for key in stats:
+                if key not in dataset_stats:
+                    dataset_stats[key] = []
+                if isinstance(stats[key], list):
+                    dataset_stats[key].extend(stats[key])
+                else:
+                    dataset_stats[key].append(stats[key])
+
             if write is True:
                 name = f[str(idx)].attrs["ID"]
 
@@ -124,7 +134,7 @@ def evaluate(hdf_file, model, write=False):
                 sf.write(enhance_path, enhanced.cpu().numpy().squeeze(), params.Sample_rate)
                 clean_path = os.path.join(params.enhanced_folder, name + "_clean.wav")
                 sf.write(clean_path, clean.cpu().numpy().squeeze(), params.Sample_rate)
-    return stats
+    return dataset_stats
 
 
 def evaluate_audio(audio, model):
@@ -210,6 +220,7 @@ def compute_features2(wavs):
 
     return features
 
+
 # Prepare data
 prepare_timit(
     data_folder=params.data_folder,
@@ -232,32 +243,35 @@ train_set = DataLoader(params.train_dataset,
                        num_workers=1,
                        worker_init_fn=worker_init_fn)
 valid_set = DataLoader(params.valid_dataset,
-                       batch_size=params.N_batch,
+                       batch_size=None,
                        shuffle=False,
                        num_workers=1,
                        worker_init_fn=worker_init_fn)
 test_set = DataLoader(params.test_dataset,
-                       batch_size=params.N_batch,
+                       batch_size=None,
                        shuffle=False,
                        num_workers=1,
                        worker_init_fn=worker_init_fn)
 
+
 class SEBrain(sb.core.Brain):
     def compute_forward(self, x, stage="train", init_params=False):
-        # ids, wavs, lens = x
+        _, wavs, _ = x
         # wavs, lens = truncate(wavs, lens, params.max_length)
         # wavs = torch.unsqueeze(wavs, -1)
         # wavs, lens = wavs.to(params.device), lens.to(params.device)
-        wavs = x.to(params.device)
+        wavs = wavs.to(params.device)
         out = params.model(wavs)
         return out
 
     def compute_objectives(self, predictions, targets, stage="train"):
-        # ids, target_wavs, lens = targets
+        name, target_wavs, length = targets
         # target_wavs, lens = truncate(target_wavs, lens, params.max_length)
         predictions = torch.squeeze(predictions, 1)
-        targets = torch.squeeze(targets, 1)[:, params.model.shapes["output_start_frame"]:params.model.shapes["output_end_frame"]]
-        target_wavs = targets.to(params.device)
+
+        start = params.model.shapes["output_start_frame"]
+        target_wavs = torch.squeeze(target_wavs, 1)[:, start:start+length]
+        target_wavs = target_wavs.to(params.device)
         # lens = lens.to(params.device)
         mse_loss = params.compute_cost(predictions, target_wavs)
 
@@ -269,8 +283,69 @@ class SEBrain(sb.core.Brain):
 
         loss = 0.8 * mse_loss + 0.2 * feature_loss
 
+        print("predictions shape: %s" % str(predictions.shape))
+        print("target_wavs shape: %s" % str(target_wavs.shape))
+        print("length: %d" % length)
         stats = {}
+        if stage != "train":
+            pesq_scores = multiprocess_evaluation(
+                predictions.cpu().numpy(),
+                target_wavs.cpu().numpy(),
+                np.array([length]),
+            )
+
+            stats['snr'] = [snr(predictions, target_wavs, False)]
+            stats['snr_scaled'] = [snr(predictions, target_wavs)]
+            stats["pesq"] = pesq_scores
+            stats["stoi"] = -stoi_loss(predictions, target_wavs, torch.Tensor([length])).unsqueeze(0)
+
+            if stage == "test":
+                enhance_path = os.path.join(params.enhanced_folder, name + ".wav")
+                sf.write(enhance_path, predictions.cpu().numpy().squeeze(), params.Sample_rate)
+                clean_path = os.path.join(params.enhanced_folder, name + "_clean.wav")
+                sf.write(clean_path, target_wavs.cpu().numpy().squeeze(), params.Sample_rate)
+
         return loss, stats
+
+    def evaluate_batch(self, batch, stage="test"):
+        """Evaluate one batch, override for different procedure than train.
+
+        The default impementation depends on two methods being defined
+        with a particular behavior:
+
+        * ``compute_forward()``
+        * ``compute_objectives()``
+
+        Arguments
+        ---------
+        batch : list of torch.Tensors
+            batch of data to use for evaluation. Default implementation assumes
+            this batch has two elements: inputs and targets.
+        stage : str
+            The stage of the training process, one of "valid", "test"
+
+        Returns
+        -------
+        dict
+            A dictionary of the same format as ``fit_batch()`` where each item
+            includes a statistic about the batch, including the loss.
+            (e.g. ``{"loss": 0.1, "accuracy": 0.9}``)
+        """
+        inputs, targets = batch
+
+        _, input_wavs, length = inputs
+        input_wavs = input_wavs.to(params.device)
+        pred_wavs = params.model(input_wavs)
+        pred_wavs = pred_wavs.view(1, 1, pred_wavs.shape[0] * pred_wavs.shape[2])[:, :, :length]
+
+        name, clean_wavs, len = targets
+        clean_wavs = clean_wavs.to(params.device)
+        clean_wavs = clean_wavs.view(1, 1, clean_wavs.shape[0] * clean_wavs.shape[2])
+        targets = [name, clean_wavs, len]
+
+        loss, stats = self.compute_objectives(pred_wavs, targets, stage=stage)
+        stats["loss"] = loss.detach()
+        return stats
 
     def on_epoch_end(self, epoch, train_stats, valid_stats=None):
         valid_stats = evaluate(params.hdf5_valid, params.model)
@@ -291,13 +366,13 @@ class SEBrain(sb.core.Brain):
 
         if epoch % 5 == 0:
             # Load best checkpoint for evaluation
-            params.checkpointer.recover_if_possible(max_key="pesq_score")
-            test_stats = evaluate(params.hdf5_test, params.model, write=True)
+            # params.checkpointer.recover_if_possible(max_key="pesq_score")
+            test_stats = self.evaluate(test_set)
             params.train_logger.log_stats(
                 stats_meta={"Epoch loaded": params.epoch_counter.current},
                 test_stats=test_stats,
             )
-            params.checkpointer.recover_if_possible()
+            # params.checkpointer.recover_if_possible()
 
 
 params.model.to(torch.device(params.device))
@@ -310,11 +385,12 @@ se_brain = SEBrain(
 
 # Load latest checkpoint to resume training
 params.checkpointer.recover_if_possible()
-# se_brain.fit(params.epoch_counter, train_set)
+# se_brain.fit(params.epoch_counter, train_set, valid_set)
 
 # Load best checkpoint for evaluation
 # params.checkpointer.recover_if_possible(max_key="pesq_score")
-test_stats = evaluate(params.hdf5_test, params.model, write=True)
+# test_stats = se_brain.evaluate(valid_set)
+test_stats = evaluate(params.hdf5_valid, params.model, write=False)
 params.train_logger.log_stats(
     stats_meta={"Epoch loaded": params.epoch_counter.current},
     test_stats=test_stats,
