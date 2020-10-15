@@ -194,12 +194,16 @@ class SEBrain(sb.core.Brain):
 
         predicted_features = compute_features(predictions)
         target_features = compute_features(target_wavs)
-        feature_loss = 0
+        total_feature_loss = 0
+        feature_losses = []
         for i in range(len(predicted_features)):
-            feature_loss += params.compute_cost(predicted_features[i], target_features[i])
+            feature_loss = params.compute_cost(predicted_features[i], target_features[i])
+            feature_losses.append(feature_loss)
+            if i in params.wav2vec_loss_layers:
+                total_feature_loss += feature_loss
 
-        # loss = 0.8 * mse_loss + 0.2 * feature_loss
-        loss = mse_loss
+        loss = 0.8 * mse_loss + 0.2 * total_feature_loss
+        # loss = mse_loss
 
         stats = {}
         if stage != "train":
@@ -209,6 +213,10 @@ class SEBrain(sb.core.Brain):
                 np.array([length]),
             )
 
+            stats["mse_loss"] = mse_loss
+            stats["feature_loss"] = total_feature_loss
+            for i, feature_loss in enumerate(feature_losses):
+                stats["fl[{idx}]".format(idx=i)] = feature_loss
             stats['snr'] = [snr(predictions, target_wavs, False)]
             stats['snr_scaled'] = [snr(predictions, target_wavs)]
             stats["pesq"] = pesq_scores
@@ -279,13 +287,13 @@ class SEBrain(sb.core.Brain):
 
         if epoch % 5 == 0:
             # Load best checkpoint for evaluation
-            params.checkpointer.recover_if_possible(max_key="pesq_score")
+            # params.checkpointer.recover_if_possible(max_key="pesq_score")
             test_stats = self.evaluate(test_set)
             params.train_logger.log_stats(
                 stats_meta={"Epoch loaded": params.epoch_counter.current},
                 test_stats=test_stats,
             )
-            params.checkpointer.recover_if_possible()
+            # params.checkpointer.recover_if_possible()
 
 
 params.model.to(torch.device(params.device))

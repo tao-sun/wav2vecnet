@@ -14,6 +14,7 @@ enhanced_folder: !ref <output_folder>/enhanced
 wav2vec_version: 1.0
 wav2vec1_model: ./data/pretrained/wav2vec_large.pt
 wav2vec2_model: ./data/pretrained/libri960_big.pt'
+wav2vec_loss_layers: [3, 4, 5, 6]
 
 # Basic parameters
 use_tensorboard: True
@@ -43,7 +44,6 @@ model: !new:waveunet.Waveunet
     target_output_size: !ref <output_size> * <Sample_rate>
     conv_type: 'gn'
     res: 'fixed'
-
 
 train_dataset: !new:data.SeparationDataset
     hdf_file: !ref <hdf5_train>

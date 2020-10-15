@@ -646,7 +646,7 @@ def check_timit_folders(*folders):
             )
 
 
-def get_samples(csv_path):
+def get_samples(csv_path, snr_level="all"):
     reader = csv.reader(open(csv_path, "r"))
 
     first_row = True
@@ -667,11 +667,13 @@ def get_samples(csv_path):
             )
             raise ValueError(err_msg)
 
-        attrs = {}
+        row_id = row[0]
+        if snr_level == "all" or snr_level == row_id.split("_")[1]:
+            attrs = {}
         # Filling the data dictionary
-        for i, field in enumerate(field_lst):
-            attrs[field] = row[i]
-        samples.append(attrs)
+            for i, field in enumerate(field_lst):
+                attrs[field] = row[i]
+            samples.append(attrs)
 
     return samples
 

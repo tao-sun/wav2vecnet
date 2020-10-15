@@ -196,7 +196,8 @@ class SEBrain(sb.core.Brain):
         for i in range(len(predicted_features)):
             feature_loss += params.compute_cost(predicted_features[i], target_features[i])
 
-        loss = 0.5 * mse_loss + 0.5 * feature_loss
+        loss = 0.8 * mse_loss + 0.2 * feature_loss
+        # loss = mse_loss
 
         stats = {}
         if stage != "train":
@@ -206,6 +207,8 @@ class SEBrain(sb.core.Brain):
                 target_wavs.cpu().numpy(),
                 lens.cpu().numpy(),
             )
+            stats["mse_loss"] = mse_loss
+            stats["feature_loss"] = feature_loss
             stats['snr'] = snr(predictions, target_wavs, False)
             stats['snr_scaled'] = snr(predictions, target_wavs)
             stats["pesq"] = pesq_scores
