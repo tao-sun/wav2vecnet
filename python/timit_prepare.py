@@ -259,9 +259,9 @@ def prepare_timit(data_folder, save_folder, valid_speaker_count=2):
     logger.debug("Creating csv files for noisy TIMIT...")
 
     # Creating csv file for training data
-    extension = [".WAV"]
+    extension = [".WAV", ".wav"]
     # valid_speakers = TRAIN_SPEAKERS[:valid_speaker_count]
-    wav_lst_train = get_all_files(train_noisy_folder, match_and=extension)
+    wav_lst_train = get_all_files(train_noisy_folder, match_or=extension)
     create_csv(wav_lst_train, save_csv_train, train_noisy_folder, train_clean_folder, save_csv_valid)
 
     # Creating csv file for validation data
@@ -271,7 +271,7 @@ def prepare_timit(data_folder, save_folder, valid_speaker_count=2):
     # create_csv(wav_lst_valid, train_clean_folder)
 
     # Creating csv file for testing data
-    wav_lst_test = get_all_files(test_noisy_folder, match_and=extension)
+    wav_lst_test = get_all_files(test_noisy_folder, match_or=extension)
     create_csv(wav_lst_test, save_csv_test, test_noisy_folder, test_clean_folder)
 
 # def skip(splits, save_folder, conf):

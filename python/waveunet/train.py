@@ -24,6 +24,9 @@ import soundfile as sf
 
 from utils import worker_init_fn
 
+from dfl.network import FeatureNet
+import torch.nn.functional as F
+
 # This hack needed to import data preparation script from ..
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(current_dir))
@@ -88,27 +91,67 @@ def snr(pred_wavs, target_wavs, scale=True):
     return snr_db
 
 
-if params.wav2vec_version == 1.0:
-    cp = torch.load(params.wav2vec1_model)
-    wav2vec = Wav2VecModel.build_model(cp['args'], task=None)
-    wav2vec.load_state_dict(cp['model'])
-    wav2vec.to(torch.device(params.device))
-    for param in wav2vec.parameters():
+def sisdr(pred_wavs, target_wavs, zero_mean=True):
+    EPS = 1e-8
+
+    if target_wavs.size() != pred_wavs.size() or target_wavs.ndim != 2:
+        raise TypeError(
+            f"Inputs must be of shape [batch, time], got {target_wavs.size()} and {pred_wavs.size()} instead"
+        )
+    # Step 1. Zero-mean norm
+    if zero_mean:
+        mean_source = torch.mean(target_wavs, dim=1, keepdim=True)
+        mean_estimate = torch.mean(pred_wavs, dim=1, keepdim=True)
+        target_wavs = target_wavs - mean_source
+        pred_wavs = pred_wavs - mean_estimate
+
+    # [batch, 1]
+    dot = torch.sum(pred_wavs * target_wavs, dim=1, keepdim=True)
+    # [batch, 1]
+    s_target_energy = torch.sum(target_wavs ** 2, dim=1, keepdim=True) + EPS
+    # [batch, time]
+    scaled_target = dot * target_wavs / s_target_energy
+    e_noise = pred_wavs - scaled_target
+    # [batch]
+    sisdr = torch.sum(scaled_target ** 2, dim=1) / (torch.sum(e_noise ** 2, dim=1) + EPS)
+    sisdr = 10 * torch.log10(sisdr + EPS)
+    sisdr = sisdr.mean()
+    return sisdr
+
+
+if params.pretrained_model == "wav2vec":
+    if params.wav2vec_version == 1.0:
+        cp = torch.load(params.wav2vec1_model)
+        wav2vec = Wav2VecModel.build_model(cp['args'], task=None)
+        wav2vec.load_state_dict(cp['model'])
+        wav2vec.to(torch.device(params.device))
+        for param in wav2vec.parameters():
+            param.requires_grad = False
+    elif params.wav2vec_version == 2.0:
+        cp = torch.load(params.wav2vec2_model)
+        wav2vec2 = Wav2Vec2Model.build_model(cp['args'])
+        wav2vec2.load_state_dict(cp['model'])
+        wav2vec2.to(torch.device(params.device))
+        for param in wav2vec2.parameters():
+            param.requires_grad = False
+elif params.pretrained_model == "dfl":
+    featurenet = FeatureNet(2, [15, 7], [1, 2])
+    featurenet.load_state_dict(torch.load(params.dfl_model))
+    featurenet.to(torch.device(params.device))
+    for param in featurenet.parameters():
         param.requires_grad = False
-elif params.wav2vec_version == 2.0:
-    cp = torch.load(params.wav2vec2_model)
-    wav2vec2 = Wav2Vec2Model.build_model(cp['args'])
-    wav2vec2.load_state_dict(cp['model'])
-    wav2vec2.to(torch.device(params.device))
-    for param in wav2vec2.parameters():
-        param.requires_grad = False
+else:
+    raise Exception("Illegal 'pretrained_model' set in the .yaml file! Please choose from 'wav2vec' and 'dfl'.")
 
 
 def compute_features(x):
-    if params.wav2vec_version == 1.0:
-        return compute_features1(x)
-    elif params.wav2vec_version == 2.0:
-        return compute_features2(x)
+    if params.pretrained_model == "wav2vec":
+        if params.wav2vec_version == 1.0:
+            return compute_features1(x)
+        elif params.wav2vec_version == 2.0:
+            return compute_features2(x)
+    elif params.pretrained_model == "dfl":
+        return compute_features_dfl(x)
 
 
 def compute_features1(wavs):
@@ -138,6 +181,20 @@ def compute_features2(wavs):
         wavs = conv(wavs)
         features.append(wavs)
 
+    return features
+
+
+def compute_features_dfl(wavs):
+    features = []
+
+    wavs = wavs.view(wavs.shape[0], 1, wavs.shape[1])
+    for i in range(1, params.dfl_layers + 1):
+        conv_layer = getattr(featurenet, "conv" + str(i))
+        norm_layer = getattr(featurenet, "batnorm" + str(i))
+
+        wavs = conv_layer(wavs)
+        wavs = F.leaky_relu(norm_layer(wavs))
+        features.append(wavs)
     return features
 
 
@@ -199,11 +256,14 @@ class SEBrain(sb.core.Brain):
         for i in range(len(predicted_features)):
             feature_loss = params.compute_cost(predicted_features[i], target_features[i])
             feature_losses.append(feature_loss)
-            if i in params.wav2vec_loss_layers:
+            if params.pretrained_model == "wav2vec":
+                if i in params.wav2vec_loss_layers:
+                    total_feature_loss += feature_loss
+            elif params.pretrained_model == "dfl":
                 total_feature_loss += feature_loss
 
-        loss = 0.8 * mse_loss + 0.2 * total_feature_loss
-        # loss = mse_loss
+        # loss = 0.995 * mse_loss + 0.005 * total_feature_loss
+        loss = mse_loss
 
         stats = {}
         if stage != "train":
@@ -219,6 +279,7 @@ class SEBrain(sb.core.Brain):
                 stats["fl[{idx}]".format(idx=i)] = feature_loss
             stats['snr'] = [snr(predictions, target_wavs, False)]
             stats['snr_scaled'] = [snr(predictions, target_wavs)]
+            stats['si_sdr'] = [sisdr(predictions, target_wavs)]
             stats["pesq"] = pesq_scores
             stats["stoi"] = -stoi_loss(predictions, target_wavs, torch.Tensor([length])).unsqueeze(0)
 

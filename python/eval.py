@@ -94,6 +94,7 @@ def batch_stats(input_wavs, target_wavs, lens, sample_rate, device=None):
     return batch_stats
 
 
+"python -u python/eval.py ./results/waveunet/TIMIT_mse/save/test.csv ./results/waveunet/TIMIT_mse/enhanced 3"
 if __name__ == '__main__':
     csv_file = sys.argv[1]
     enhanced_path = sys.argv[2]
