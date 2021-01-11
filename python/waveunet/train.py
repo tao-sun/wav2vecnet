@@ -262,8 +262,8 @@ class SEBrain(sb.core.Brain):
             elif params.pretrained_model == "dfl":
                 total_feature_loss += feature_loss
 
-        # loss = 0.995 * mse_loss + 0.005 * total_feature_loss
-        loss = mse_loss
+        loss = 0.95 * mse_loss + 0.05 * total_feature_loss
+        # loss = mse_loss
 
         stats = {}
         if stage != "train":

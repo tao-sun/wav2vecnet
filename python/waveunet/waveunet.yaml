@@ -2,10 +2,10 @@
 seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
-data_folder: /home2/data/MAzBio
+data_folder: /home/data/MAzBio  #* MAzBio vs. AzBio
 test_clean_folder: !ref <data_folder>/TEST/clean
 
-output_folder: ./results/waveunet/MAzBio
+output_folder: ./results/waveunet/MAzBio  #* MAzBio vs. AzBio
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 enhanced_folder: !ref <output_folder>/enhanced
@@ -13,10 +13,10 @@ enhanced_folder: !ref <output_folder>/enhanced
 pretrained_model: "wav2vec"  # "dfl" or "wav2vec"
 
 # Wav2vec version
-wav2vec_version: 1.0
+wav2vec_version: 2.0  #* MAzBio vs. AzBio
 wav2vec1_model: ./data/pretrained/wav2vec_large.pt
 wav2vec2_model: ./data/pretrained/libri960_big.pt
-wav2vec_loss_layers: [0, 1, 2, 3, 4, 5, 6]
+wav2vec_loss_layers: [3, 4, 5, 6]  #* MAzBio vs. AzBio
 
 # dfl:
 dfl_model: ./data/pretrained/dfl.pt
@@ -36,14 +36,14 @@ hdf5_test: !ref <data_folder>/test.hdf5
 hdf5_valid: !ref <data_folder>/valid.hdf5
 
 # Training Parameters
-number_of_epochs: 1000
+number_of_epochs: 150
 N_batch: 50
 lr: 0.001
 weight_decay: 0.001
 device: 'cuda:0'
 Sample_rate: 16000
 
-output_size: 0.375
+output_size: 0.375  #* MAzBio vs. AzBio
 model: !new:waveunet.Waveunet
     num_channels: [32, 64, 128, 256, 512, 1024]
     kernel_size: 5
