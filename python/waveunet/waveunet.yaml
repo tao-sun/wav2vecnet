@@ -2,10 +2,10 @@
 seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
-data_folder: /home/data/MAzBio  #* MAzBio vs. AzBio
+data_folder: /home2/data/TIMIT  #* MAzBio vs. AzBio
 test_clean_folder: !ref <data_folder>/TEST/clean
 
-output_folder: ./results/waveunet/MAzBio  #* MAzBio vs. AzBio
+output_folder: ./results/waveunet/TIMIT  #* MAzBio vs. AzBio
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 enhanced_folder: !ref <output_folder>/enhanced
@@ -13,10 +13,10 @@ enhanced_folder: !ref <output_folder>/enhanced
 pretrained_model: "wav2vec"  # "dfl" or "wav2vec"
 
 # Wav2vec version
-wav2vec_version: 2.0  #* MAzBio vs. AzBio
+wav2vec_version: 1.0  #* MAzBio vs. AzBio
 wav2vec1_model: ./data/pretrained/wav2vec_large.pt
 wav2vec2_model: ./data/pretrained/libri960_big.pt
-wav2vec_loss_layers: [3, 4, 5, 6]  #* MAzBio vs. AzBio
+wav2vec_loss_layers: [6]  #* MAzBio vs. AzBio
 
 # dfl:
 dfl_model: ./data/pretrained/dfl.pt
@@ -36,14 +36,16 @@ hdf5_test: !ref <data_folder>/test.hdf5
 hdf5_valid: !ref <data_folder>/valid.hdf5
 
 # Training Parameters
+loss: SM  # MSE, SM, or RI
 number_of_epochs: 150
-N_batch: 50
+N_batch: 3 # TIMIT
 lr: 0.001
 weight_decay: 0.001
 device: 'cuda:0'
+device2: 'cuda:1'
 Sample_rate: 16000
 
-output_size: 0.375  #* MAzBio vs. AzBio
+output_size: 1 #* MAzBio vs. AzBio
 model: !new:waveunet.Waveunet
     num_channels: [32, 64, 128, 256, 512, 1024]
     kernel_size: 5
@@ -56,6 +58,11 @@ train_dataset: !new:data.SeparationDataset
     sr: !ref <Sample_rate>
     channels: 1
     random_hops: False
+
+train_dataset2: !new:data.FullSeparationDataset
+    hdf_file: !ref <hdf5_train>
+    sr: !ref <Sample_rate>
+    channels: 1
 
 valid_dataset: !new:data.EvaluationDataset
     hdf_file: !ref <hdf5_valid>
@@ -75,7 +82,7 @@ train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
 epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
     limit: !ref <number_of_epochs>
 
-compute_cost: !name:speechbrain.nnet.losses.mse_loss
+mse_cost: !name:speechbrain.nnet.losses.mse_loss
 
 optimizer: !new:speechbrain.nnet.optimizers.Adam_Optimizer
     learning_rate: !ref <lr>

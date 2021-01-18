@@ -96,13 +96,86 @@ class SeparationDataset(Dataset):
                 lengths = [(l // self.shapes["output_frames"]) + 1 for l in lengths]
 
             self.start_pos = SortedList(np.cumsum(lengths))
+            # Length of the dataset if number of the total frames (which
+            # equals last element of the cumulated lengths)
             self.length = self.start_pos[-1]
         return self.length
 
 
+class FullSeparationDataset(Dataset):
+    def __init__(self, hdf_file, sr, channels):
+        """
+        This dataset will keep all frames of an utterance in the same batch.
+        :param hdf_file:
+        :param sr:
+        :param channels:
+        """
+        super(FullSeparationDataset, self).__init__()
+
+        self.sr = sr
+        self.hdf_file = hdf_file
+        self.channels = channels
+        self.shapes = None
+        self.hdf_dataset = None
+
+    def set_shapes(self, shapes):
+        self.shapes = shapes
+
+    def __getitem__(self, index):
+        if self.hdf_dataset is None:
+            self.hdf_dataset = h5py.File(self.hdf_file, 'r')
+
+        audio_length = self.hdf_dataset[str(index)].attrs["length"]
+        clean_length = self.hdf_dataset[str(index)].attrs["clean_length"]
+        name = self.hdf_dataset[str(index)].attrs["ID"]
+
+        audio = self.hdf_dataset[str(index)]["noisy"][()]
+        clean = self.hdf_dataset[str(index)]["clean"][()]
+
+        output_shift = self.shapes["output_frames"]
+
+        pad_back = audio.shape[1] % output_shift
+        pad_back = 0 if pad_back == 0 else output_shift - pad_back
+        if pad_back > 0:
+            audio = np.pad(audio, [(0, 0), (0, pad_back)], mode="constant", constant_values=0.0)
+            clean = np.pad(clean, [(0, 0), (0, pad_back)], mode="constant", constant_values=0.0)
+
+        target_outputs = audio.shape[1]
+
+        # Pad mixture across time at beginning and end so that neural network can make prediction at the beginning and end of signal
+        pad_front_context = self.shapes["output_start_frame"]
+        pad_back_context = self.shapes["input_frames"] - self.shapes["output_end_frame"]
+        audio = np.pad(audio, [(0, 0), (pad_front_context, pad_back_context)], mode="constant", constant_values=0.0)
+        clean = np.pad(clean, [(0, 0), (pad_front_context, pad_back_context)], mode="constant", constant_values=0.0)
+
+        # Iterate over mixture magnitudes, fetch network prediction
+        examples = [audio[:, target_start_pos:target_start_pos + self.shapes["input_frames"]]
+                    for target_start_pos in range(0, target_outputs, self.shapes["output_frames"])]
+        targets = [clean[:, target_start_pos:target_start_pos + self.shapes["input_frames"]]
+                   for target_start_pos in range(0, target_outputs, self.shapes["output_frames"])]
+
+        return [name, np.array(examples), audio_length], [name, np.array(targets), clean_length]
+
+    def __len__(self):
+        if self.hdf_dataset is None:
+            with h5py.File(self.hdf_file, "r") as f:
+                if f.attrs["sr"] != self.sr or \
+                        f.attrs["channels"] != self.channels:
+                    raise ValueError(
+                        "Tried to load existing HDF file, but sampling rate and channel are not as expected. "
+                        "Did you load an out-dated HDF file?")
+
+                self.length = len(f)
+        return self.length
+
 class EvaluationDataset(Dataset):
     def __init__(self, hdf_file, sr, channels):
-
+        """
+        Almost same as FullSeparationDataset, only that clean utterance is not split.
+        :param hdf_file:
+        :param sr:
+        :param channels:
+        """
         super(EvaluationDataset, self).__init__()
 
         self.sr = sr

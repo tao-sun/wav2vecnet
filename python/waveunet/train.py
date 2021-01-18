@@ -9,6 +9,7 @@ import h5py
 import numpy as np
 
 import torch
+import torch.nn as nn
 import torchaudio
 from torch.utils.data import DataLoader
 torchaudio.set_audio_backend("soundfile")
@@ -26,6 +27,7 @@ from utils import worker_init_fn
 
 from dfl.network import FeatureNet
 import torch.nn.functional as F
+import torch.utils.data._utils.collate as collate
 
 # This hack needed to import data preparation script from ..
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -119,19 +121,91 @@ def sisdr(pred_wavs, target_wavs, zero_mean=True):
     return sisdr
 
 
+def pad_batch(batch_input):
+    """
+    Pad a patch so that they have the same number of frames
+    """
+    max_sample_frames = max([sample[0][1].shape[0] for sample in batch_input])
+    new_batch = []
+
+    for item in batch_input:
+        name, noisy, audio_length = item[0]
+
+        frame_num_diff = max_sample_frames - noisy.shape[0]
+        padded_example = np.zeros((frame_num_diff, 1, noisy.shape[2]), dtype=noisy.dtype)
+        new_noisy = np.concatenate([noisy, padded_example], 0)
+
+        _, clean, clean_length = item[1]
+
+        padded_clean = np.zeros((frame_num_diff, 1, noisy.shape[2]), dtype=clean.dtype)
+        new_clean = np.concatenate([clean, padded_clean], 0)
+
+        for i in range(max_sample_frames):
+            new_batch.append(([name, new_noisy[i], audio_length], [name, new_clean[i], clean_length]))
+
+
+    collated_batch = collate.default_collate(new_batch)
+    # inputs, targets = collated_batch
+    # print("inputs:" + str([sample for sample in inputs]))
+    # print("targets:" + str([sample for sample in targets]))
+    # print("batch0:" + str([sample for sample in collated_batch]))
+    # print("batch1:" + str(collated_batch))
+    return collated_batch
+
+
+def ri_loss(pred, gt, N=512):
+    pred_stft = torch.stft(pred, N)  # utils.stdft(pred, N)
+    gt_stft = torch.stft(gt, N)  # utils.stdft(gt, N)
+
+    r_pred_stft = pred_stft[:, :, :, 0]
+    r_gt_stft = gt_stft[:, :, :, 0]
+    r_loss = F.l1_loss(r_pred_stft, r_gt_stft)
+
+    i_pred_stft = pred_stft[:, :, :, 1]
+    i_gt_stft = gt_stft[:, :, :, 1]
+    i_loss = F.l1_loss(i_pred_stft, i_gt_stft)
+
+    loss = r_loss + i_loss
+    return loss
+
+
+def sm_loss(pred, gt, N=512):
+    pred_stft = torch.stft(pred, N)  # utils.stdft(pred, N)
+    gt_stft = torch.stft(gt, N)  # utils.stdft(gt, N)
+
+    r_pred_stft = torch.abs(pred_stft[:, :, :, 0])
+    i_pred_stft = torch.abs(pred_stft[:, :, :, 1])
+    m_pred_stft = r_pred_stft + i_pred_stft
+
+    r_gt_stft = torch.abs(gt_stft[:, :, :, 0])
+    i_gt_stft = torch.abs(gt_stft[:, :, :, 1])
+    m_gt_stft = r_gt_stft + i_gt_stft
+
+    loss = F.l1_loss(m_pred_stft, m_gt_stft)
+    return loss
+
+
 if params.pretrained_model == "wav2vec":
     if params.wav2vec_version == 1.0:
         cp = torch.load(params.wav2vec1_model)
         wav2vec = Wav2VecModel.build_model(cp['args'], task=None)
         wav2vec.load_state_dict(cp['model'])
-        wav2vec.to(torch.device(params.device))
+        if torch.cuda.device_count() > 1:
+            wav2vec.to(torch.device(params.device2))
+        else:
+            wav2vec.to(torch.device(params.device))
         for param in wav2vec.parameters():
             param.requires_grad = False
     elif params.wav2vec_version == 2.0:
         cp = torch.load(params.wav2vec2_model)
         wav2vec2 = Wav2Vec2Model.build_model(cp['args'])
         wav2vec2.load_state_dict(cp['model'])
-        wav2vec2.to(torch.device(params.device))
+
+        if torch.cuda.device_count() > 1:
+            wav2vec2.to(torch.device(params.device2))
+        else:
+            wav2vec2.to(torch.device(params.device))
+
         for param in wav2vec2.parameters():
             param.requires_grad = False
 elif params.pretrained_model == "dfl":
@@ -155,6 +229,8 @@ def compute_features(x):
 
 
 def compute_features1(wavs):
+    if torch.cuda.device_count() > 1:
+        wavs = wavs.to(params.device2)
     feature_extractor = wav2vec.feature_extractor
 
     features = []
@@ -167,12 +243,14 @@ def compute_features1(wavs):
             r_tsz = residual.size(2)
             residual = residual[..., :: r_tsz // tsz][..., :tsz]
             wavs = (wavs + residual) * feature_extractor.residual_scale
-        features.append(wavs)
 
+        features.append(wavs)
     return features
 
 
 def compute_features2(wavs):
+    if torch.cuda.device_count() > 1:
+        wavs = wavs.to(params.device2)
     feature_extractor = wav2vec2.feature_extractor
 
     features = []
@@ -212,13 +290,23 @@ if not os.path.exists(params.hdf5_test):
     create_hdf5(params.csv_test, params.hdf5_test, params.Sample_rate)
 
 params.train_dataset.set_shapes(params.model.shapes)
+params.train_dataset2.set_shapes(params.model.shapes)
 params.valid_dataset.set_shapes(params.model.shapes)
 params.test_dataset.set_shapes(params.model.shapes)
-train_set = DataLoader(params.train_dataset,
-                       batch_size=params.N_batch,
-                       shuffle=True,
-                       num_workers=1,
-                       worker_init_fn=worker_init_fn)
+
+if params.loss == "MSE":
+    train_set = DataLoader(params.train_dataset,
+                           batch_size=params.N_batch,
+                           shuffle=True,
+                           num_workers=1,
+                           worker_init_fn=worker_init_fn)
+else:
+    train_set = DataLoader(params.train_dataset2,
+                           batch_size=params.N_batch,
+                           shuffle=True,
+                           collate_fn=pad_batch,
+                           num_workers=1,
+                           worker_init_fn=worker_init_fn)
 valid_set = DataLoader(params.valid_dataset,
                        batch_size=None,
                        shuffle=False,
@@ -238,23 +326,36 @@ class SEBrain(sb.core.Brain):
         out = params.model(wavs)
         return out
 
-    def compute_objectives(self, predictions, targets, stage="train"):
-        predictions = torch.squeeze(predictions, 1)
+    def compute_objectives(self, pred_wavs, targets, stage="train"):
+        pred_wavs = torch.squeeze(pred_wavs, 1)
+        pred_wavs = pred_wavs.to(params.device)
 
         name, target_wavs, length = targets
         start = params.model.shapes["output_start_frame"]
-        end = start + predictions.shape[1]
+        end = start + pred_wavs.shape[1]
         target_wavs = torch.squeeze(target_wavs, 1)[:, start:end]
-
         target_wavs = target_wavs.to(params.device)
-        mse_loss = params.compute_cost(predictions, target_wavs)
 
-        predicted_features = compute_features(predictions)
+        if params.loss == "MSE":
+            basic_loss = params.mse_cost(pred_wavs, target_wavs)
+        else:
+            batch_size = pred_wavs.shape[0]
+            pred_wavs = pred_wavs.contiguous().view(batch_size, -1 , pred_wavs.shape[1])
+            pred_wavs = pred_wavs.contiguous().view(batch_size, -1)
+            target_wavs = target_wavs.contiguous().view(batch_size, -1, target_wavs.shape[1])
+            target_wavs = target_wavs.contiguous().view(batch_size, -1)
+
+            if params.loss == "SM":
+                basic_loss = sm_loss(pred_wavs, target_wavs)
+            elif params.loss == "RI":
+                basic_loss = ri_loss(pred_wavs, target_wavs)
+
+        predicted_features = compute_features(pred_wavs)
         target_features = compute_features(target_wavs)
         total_feature_loss = 0
         feature_losses = []
         for i in range(len(predicted_features)):
-            feature_loss = params.compute_cost(predicted_features[i], target_features[i])
+            feature_loss = params.mse_cost(predicted_features[i], target_features[i])
             feature_losses.append(feature_loss)
             if params.pretrained_model == "wav2vec":
                 if i in params.wav2vec_loss_layers:
@@ -262,30 +363,30 @@ class SEBrain(sb.core.Brain):
             elif params.pretrained_model == "dfl":
                 total_feature_loss += feature_loss
 
-        loss = 0.95 * mse_loss + 0.05 * total_feature_loss
-        # loss = mse_loss
+        # loss = 0.9 * basic_loss + 0.1 * total_feature_loss.to(params.device)
+        loss = basic_loss
 
         stats = {}
         if stage != "train":
             pesq_scores = multiprocess_evaluation(
-                predictions.cpu().numpy(),
+                pred_wavs.cpu().numpy(),
                 target_wavs.cpu().numpy(),
                 np.array([length]),
             )
 
-            stats["mse_loss"] = mse_loss
+            stats["basic_loss"] = basic_loss
             stats["feature_loss"] = total_feature_loss
             for i, feature_loss in enumerate(feature_losses):
                 stats["fl[{idx}]".format(idx=i)] = feature_loss
-            stats['snr'] = [snr(predictions, target_wavs, False)]
-            stats['snr_scaled'] = [snr(predictions, target_wavs)]
-            stats['si_sdr'] = [sisdr(predictions, target_wavs)]
+            stats['snr'] = [snr(pred_wavs, target_wavs, False)]
+            stats['snr_scaled'] = [snr(pred_wavs, target_wavs)]
+            stats['si_sdr'] = [sisdr(pred_wavs, target_wavs)]
             stats["pesq"] = pesq_scores
-            stats["stoi"] = -stoi_loss(predictions, target_wavs, torch.Tensor([length])).unsqueeze(0)
+            stats["stoi"] = -stoi_loss(pred_wavs, target_wavs, torch.Tensor([length])).unsqueeze(0)
 
             if stage == "test":
                 enhance_path = os.path.join(params.enhanced_folder, name + ".wav")
-                sf.write(enhance_path, predictions.cpu().numpy().squeeze(), params.Sample_rate)
+                sf.write(enhance_path, pred_wavs.cpu().numpy().squeeze(), params.Sample_rate)
                 clean_path = os.path.join(params.enhanced_folder, name + "_clean.wav")
                 sf.write(clean_path, target_wavs.cpu().numpy().squeeze(), params.Sample_rate)
 
@@ -371,7 +472,7 @@ se_brain.fit(params.epoch_counter, train_set, valid_set)
 
 # Load best checkpoint for evaluation
 params.checkpointer.recover_if_possible(max_key="pesq_score")
-test_stats = se_brain.evaluate(test_set)
+test_stats = se_brain.evaluate(valid_set)
 params.train_logger.log_stats(
     stats_meta={"Epoch loaded": params.epoch_counter.current},
     test_stats=test_stats,
