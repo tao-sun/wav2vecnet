@@ -2,7 +2,7 @@
 seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
-data_folder: /home2/data/TIMIT  #* MAzBio vs. AzBio
+data_folder: /home/data/TIMIT  #* MAzBio vs. AzBio
 test_clean_folder: !ref <data_folder>/TEST/clean
 
 output_folder: ./results/waveunet/TIMIT  #* MAzBio vs. AzBio
@@ -16,7 +16,7 @@ pretrained_model: "wav2vec"  # "dfl" or "wav2vec"
 wav2vec_version: 1.0  #* MAzBio vs. AzBio
 wav2vec1_model: ./data/pretrained/wav2vec_large.pt
 wav2vec2_model: ./data/pretrained/libri960_big.pt
-wav2vec_loss_layers: [6]  #* MAzBio vs. AzBio
+wav2vec_loss_layers: [0, 1, 2, 3, 4, 5, 6]  #* MAzBio vs. AzBio
 
 # dfl:
 dfl_model: ./data/pretrained/dfl.pt
@@ -36,13 +36,14 @@ hdf5_test: !ref <data_folder>/test.hdf5
 hdf5_valid: !ref <data_folder>/valid.hdf5
 
 # Training Parameters
-loss: SM  # MSE, SM, or RI
-number_of_epochs: 150
+loss: SM  # MSE, SM, RI, or PCM
+number_of_epochs: 120
 N_batch: 3 # TIMIT
 lr: 0.001
 weight_decay: 0.001
 device: 'cuda:0'
 device2: 'cuda:1'
+use_device2: False
 Sample_rate: 16000
 
 output_size: 1 #* MAzBio vs. AzBio

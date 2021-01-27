@@ -185,12 +185,23 @@ def sm_loss(pred, gt, N=512):
     return loss
 
 
+def pcm_loss(inputs, pred, gt, N=512):
+    pred_sm = sm_loss(pred, gt, N)
+
+    pred_noise = inputs - pred
+    gt_noise = inputs - gt
+    noise_sm = sm_loss(pred_noise, gt_noise, N)
+
+    pcm = 0.5 * pred_sm + 0.5 * noise_sm
+    return pcm
+
+
 if params.pretrained_model == "wav2vec":
     if params.wav2vec_version == 1.0:
         cp = torch.load(params.wav2vec1_model)
         wav2vec = Wav2VecModel.build_model(cp['args'], task=None)
         wav2vec.load_state_dict(cp['model'])
-        if torch.cuda.device_count() > 1:
+        if params.use_device2 and torch.cuda.device_count() > 1:
             wav2vec.to(torch.device(params.device2))
         else:
             wav2vec.to(torch.device(params.device))
@@ -201,7 +212,7 @@ if params.pretrained_model == "wav2vec":
         wav2vec2 = Wav2Vec2Model.build_model(cp['args'])
         wav2vec2.load_state_dict(cp['model'])
 
-        if torch.cuda.device_count() > 1:
+        if params.use_device2 and torch.cuda.device_count() > 1:
             wav2vec2.to(torch.device(params.device2))
         else:
             wav2vec2.to(torch.device(params.device))
@@ -229,7 +240,7 @@ def compute_features(x):
 
 
 def compute_features1(wavs):
-    if torch.cuda.device_count() > 1:
+    if params.use_device2 and torch.cuda.device_count() > 1:
         wavs = wavs.to(params.device2)
     feature_extractor = wav2vec.feature_extractor
 
@@ -249,7 +260,7 @@ def compute_features1(wavs):
 
 
 def compute_features2(wavs):
-    if torch.cuda.device_count() > 1:
+    if params.use_device2 and torch.cuda.device_count() > 1:
         wavs = wavs.to(params.device2)
     feature_extractor = wav2vec2.feature_extractor
 
@@ -321,8 +332,8 @@ test_set = DataLoader(params.test_dataset,
 
 class SEBrain(sb.core.Brain):
     def compute_forward(self, x, stage="train", init_params=False):
-        _, wavs, _ = x
-        wavs = wavs.to(params.device)
+        _, self.input_wavs, _ = x
+        wavs = self.input_wavs.to(params.device)
         out = params.model(wavs)
         return out
 
@@ -349,6 +360,8 @@ class SEBrain(sb.core.Brain):
                 basic_loss = sm_loss(pred_wavs, target_wavs)
             elif params.loss == "RI":
                 basic_loss = ri_loss(pred_wavs, target_wavs)
+            elif params.loss == "PCM":
+                basic_loss = pcm_loss(self.input_wavs, pred_wavs, target_wavs)
 
         predicted_features = compute_features(pred_wavs)
         target_features = compute_features(target_wavs)
@@ -363,8 +376,8 @@ class SEBrain(sb.core.Brain):
             elif params.pretrained_model == "dfl":
                 total_feature_loss += feature_loss
 
-        # loss = 0.9 * basic_loss + 0.1 * total_feature_loss.to(params.device)
-        loss = basic_loss
+        loss = 0.8 * basic_loss + 0.2 * total_feature_loss.to(params.device)
+        # loss = basic_loss
 
         stats = {}
         if stage != "train":
@@ -418,8 +431,8 @@ class SEBrain(sb.core.Brain):
         """
         inputs, targets = batch
 
-        _, input_wavs, audio_length = inputs
-        input_wavs = input_wavs.to(params.device)
+        _, self.input_wavs, audio_length = inputs
+        input_wavs = self.input_wavs.to(params.device)
         pred_wavs = params.model(input_wavs)
         pred_wavs = pred_wavs.view(1, 1, pred_wavs.shape[0] * pred_wavs.shape[2])[:, :, :audio_length]
 
@@ -472,7 +485,7 @@ se_brain.fit(params.epoch_counter, train_set, valid_set)
 
 # Load best checkpoint for evaluation
 params.checkpointer.recover_if_possible(max_key="pesq_score")
-test_stats = se_brain.evaluate(valid_set)
+test_stats = se_brain.evaluate(test_set)
 params.train_logger.log_stats(
     stats_meta={"Epoch loaded": params.epoch_counter.current},
     test_stats=test_stats,
