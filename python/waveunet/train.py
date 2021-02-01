@@ -10,9 +10,9 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-import torchaudio
+# import torchaudio
 from torch.utils.data import DataLoader
-torchaudio.set_audio_backend("soundfile")
+# torchaudio.set_audio_backend("soundfile")
 from joblib import Parallel, delayed
 from pesq import pesq
 from torch import FloatTensor, LongTensor
@@ -28,13 +28,18 @@ from utils import worker_init_fn
 from dfl.network import FeatureNet
 import torch.nn.functional as F
 import torch.utils.data._utils.collate as collate
+from prepare_data.timit_prepare import prepare_timit
+from prepare_data.voicebank_prepare import prepare_voicebank
+from prepare_data.hdf5_prepare import create_hdf5
+
+from evaluate.quality_measures import SNRseg, composite
+
+from fairseq.models.wav2vec import Wav2VecModel, Wav2Vec2Model
+
 
 # This hack needed to import data preparation script from ..
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(current_dir))
-from timit_prepare import prepare_timit, create_hdf5  # noqa E402
-
-from fairseq.models.wav2vec import Wav2VecModel, Wav2Vec2Model
 
 
 
@@ -70,7 +75,29 @@ def multiprocess_evaluation(pred_wavs, target_wavs, lengths):
         )
         for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
     )
-    return pesq_scores
+    composites = Parallel(n_jobs=30)(
+        delayed(composite)(
+            fs=params.Sample_rate,
+            clean_speech=clean[: int(length)],
+            processed_speech=enhanced[: int(length)]
+        )
+        for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
+    )
+    csigs, cbaks, covls =[], [], []
+    for csig, cbak, covl in composites:
+        csigs.append(csig)
+        cbaks.append(cbak)
+        covls.append(covl)
+
+    ssnrs = Parallel(n_jobs=30)(
+        delayed(SNRseg)(
+            fs=params.Sample_rate,
+            clean_speech=clean[: int(length)],
+            processed_speech=enhanced[: int(length)]
+        )
+        for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
+    )
+    return pesq_scores, csigs, cbaks, covls, ssnrs
 
 
 def snr(pred_wavs, target_wavs, scale=True):
@@ -222,7 +249,10 @@ if params.pretrained_model == "wav2vec":
 elif params.pretrained_model == "dfl":
     featurenet = FeatureNet(2, [15, 7], [1, 2])
     featurenet.load_state_dict(torch.load(params.dfl_model))
-    featurenet.to(torch.device(params.device))
+    if params.use_device2 and torch.cuda.device_count() > 1:
+        featurenet.to(torch.device(params.device2))
+    else:
+        featurenet.to(torch.device(params.device))
     for param in featurenet.parameters():
         param.requires_grad = False
 else:
@@ -230,6 +260,8 @@ else:
 
 
 def compute_features(x):
+    if params.use_device2 and torch.cuda.device_count() > 1:
+        x = x.to(params.device2)
     if params.pretrained_model == "wav2vec":
         if params.wav2vec_version == 1.0:
             return compute_features1(x)
@@ -240,8 +272,6 @@ def compute_features(x):
 
 
 def compute_features1(wavs):
-    if params.use_device2 and torch.cuda.device_count() > 1:
-        wavs = wavs.to(params.device2)
     feature_extractor = wav2vec.feature_extractor
 
     features = []
@@ -260,8 +290,6 @@ def compute_features1(wavs):
 
 
 def compute_features2(wavs):
-    if params.use_device2 and torch.cuda.device_count() > 1:
-        wavs = wavs.to(params.device2)
     feature_extractor = wav2vec2.feature_extractor
 
     features = []
@@ -288,10 +316,16 @@ def compute_features_dfl(wavs):
 
 
 # Prepare data
-prepare_timit(
-    data_folder=params.data_folder,
-    save_folder=params.save_folder
-)
+if params.dataset == "TIMIT":
+    prepare_timit(
+        data_folder=params.data_folder,
+        save_folder=params.save_folder
+    )
+elif params.dataset == "voicebank":
+    prepare_voicebank(
+        data_folder=params.data_folder,
+        save_folder=params.save_folder
+    )
 
 if not os.path.exists(params.hdf5_train):
     create_hdf5(params.csv_train, params.hdf5_train, params.Sample_rate)
@@ -305,7 +339,7 @@ params.train_dataset2.set_shapes(params.model.shapes)
 params.valid_dataset.set_shapes(params.model.shapes)
 params.test_dataset.set_shapes(params.model.shapes)
 
-if params.loss == "MSE":
+if params.basic_loss == "MSE":
     train_set = DataLoader(params.train_dataset,
                            batch_size=params.N_batch,
                            shuffle=True,
@@ -342,59 +376,77 @@ class SEBrain(sb.core.Brain):
         pred_wavs = pred_wavs.to(params.device)
 
         name, target_wavs, length = targets
+        target_wavs = target_wavs.to(params.device)
         start = params.model.shapes["output_start_frame"]
         end = start + pred_wavs.shape[1]
         target_wavs = torch.squeeze(target_wavs, 1)[:, start:end]
-        target_wavs = target_wavs.to(params.device)
 
-        if params.loss == "MSE":
+        input_wavs = self.input_wavs
+        input_wavs = input_wavs.to(params.device)
+        if stage != "train":
+            input_wavs = input_wavs.contiguous().view(1, 1, -1)
+        input_wavs = torch.squeeze(input_wavs, 1)[:, start:end]
+
+        if params.basic_loss == "MSE":
             basic_loss = params.mse_cost(pred_wavs, target_wavs)
         else:
-            batch_size = pred_wavs.shape[0]
-            pred_wavs = pred_wavs.contiguous().view(batch_size, -1 , pred_wavs.shape[1])
+            batch_size = params.N_batch if stage == "train" else pred_wavs.shape[0]
+            pred_wavs = pred_wavs.contiguous().view(batch_size, -1, pred_wavs.shape[1])
             pred_wavs = pred_wavs.contiguous().view(batch_size, -1)
             target_wavs = target_wavs.contiguous().view(batch_size, -1, target_wavs.shape[1])
             target_wavs = target_wavs.contiguous().view(batch_size, -1)
+            input_wavs = input_wavs.contiguous().view(batch_size, -1, input_wavs.shape[1])
+            input_wavs = input_wavs.contiguous().view(batch_size, -1)
 
-            if params.loss == "SM":
+            if params.basic_loss == "SM":
                 basic_loss = sm_loss(pred_wavs, target_wavs)
-            elif params.loss == "RI":
+            elif params.basic_loss == "RI":
                 basic_loss = ri_loss(pred_wavs, target_wavs)
-            elif params.loss == "PCM":
-                basic_loss = pcm_loss(self.input_wavs, pred_wavs, target_wavs)
+            elif params.basic_loss == "PCM":
+                basic_loss = pcm_loss(input_wavs, pred_wavs, target_wavs)
 
-        predicted_features = compute_features(pred_wavs)
-        target_features = compute_features(target_wavs)
-        total_feature_loss = 0
-        feature_losses = []
-        for i in range(len(predicted_features)):
-            feature_loss = params.mse_cost(predicted_features[i], target_features[i])
-            feature_losses.append(feature_loss)
-            if params.pretrained_model == "wav2vec":
-                if i in params.wav2vec_loss_layers:
+        if params.combined_loss:
+            predicted_features = compute_features(pred_wavs)
+            target_features = compute_features(target_wavs)
+            total_feature_loss = 0
+            feature_losses = []
+            for i in range(len(predicted_features)):
+                feature_loss = params.mse_cost(predicted_features[i], target_features[i])
+                feature_losses.append(feature_loss)
+                if params.pretrained_model == "wav2vec":
+                    if i in params.wav2vec_loss_layers:
+                        total_feature_loss += feature_loss
+                elif params.pretrained_model == "dfl":
                     total_feature_loss += feature_loss
-            elif params.pretrained_model == "dfl":
-                total_feature_loss += feature_loss
 
-        loss = 0.8 * basic_loss + 0.2 * total_feature_loss.to(params.device)
-        # loss = basic_loss
+            r1, r2 = params.weights_ratio.split(":")
+            loss = float(r1) * basic_loss + float(r2) * total_feature_loss.to(params.device)
+        else:
+            loss = basic_loss
 
         stats = {}
         if stage != "train":
-            pesq_scores = multiprocess_evaluation(
+            pesq_scores, csigs, cbaks, covls, ssnrs = multiprocess_evaluation(
                 pred_wavs.cpu().numpy(),
                 target_wavs.cpu().numpy(),
                 np.array([length]),
             )
 
             stats["basic_loss"] = basic_loss
-            stats["feature_loss"] = total_feature_loss
-            for i, feature_loss in enumerate(feature_losses):
-                stats["fl[{idx}]".format(idx=i)] = feature_loss
+            if params.combined_loss:
+                stats["feature_loss"] = total_feature_loss
+                for i, feature_loss in enumerate(feature_losses):
+                    stats["fl[{idx}]".format(idx=i)] = feature_loss
             stats['snr'] = [snr(pred_wavs, target_wavs, False)]
-            stats['snr_scaled'] = [snr(pred_wavs, target_wavs)]
+            stats["ssnrs"] = ssnrs
+            # stats['snr_scaled'] = [snr(pred_wavs, target_wavs)]
             stats['si_sdr'] = [sisdr(pred_wavs, target_wavs)]
             stats["pesq"] = pesq_scores
+            if stage == "test":
+                stats["csigs"] = csigs
+                stats["cbaks"] = cbaks
+                stats["covls"] = covls
+
             stats["stoi"] = -stoi_loss(pred_wavs, target_wavs, torch.Tensor([length])).unsqueeze(0)
 
             if stage == "test":
