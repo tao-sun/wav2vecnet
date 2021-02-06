@@ -381,6 +381,8 @@ class SEBrain(sb.core.Brain):
             auto_mix_prec=False,
     ):
         super(SEBrain, self).__init__(modules, optimizer, first_inputs, auto_mix_prec)
+
+        self.input_wavs = None
         if params.pretrained_model == "wav2vec":
             self.feature_weights = torch.ones(len(params.wav2vec_loss_layers), device=params.device)
             self.weights_ratio = params.weights_ratio
@@ -491,6 +493,8 @@ class SEBrain(sb.core.Brain):
             if stage == "test":
                 enhance_path = os.path.join(params.enhanced_folder, name + ".wav")
                 sf.write(enhance_path, pred_wavs.cpu().numpy().squeeze(), params.Sample_rate)
+                noisy_path = os.path.join(params.enhanced_folder, name + "_noisy.wav")
+                sf.write(noisy_path, self.input_wavs.cpu().numpy().squeeze(), params.Sample_rate)
                 clean_path = os.path.join(params.enhanced_folder, name + "_clean.wav")
                 sf.write(clean_path, target_wavs.cpu().numpy().squeeze(), params.Sample_rate)
 
