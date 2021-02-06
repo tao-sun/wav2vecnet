@@ -477,7 +477,7 @@ class SEBrain(sb.core.Brain):
             stats['si_sdr'] = [sisdr(pred_wavs, target_wavs)]
             stats["pesq"] = pesq_scores
             if stage == "test":
-                csigs, cbaks, covls, ssnrs = compute_composite(
+                csigs, cbaks, covls = compute_composite(
                     pred_wavs.cpu().numpy(),
                     target_wavs.cpu().numpy(),
                     np.array([length]),
