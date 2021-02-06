@@ -417,7 +417,7 @@ class SEBrain(sb.core.Brain):
             elif params.basic_loss == "PCM":
                 basic_loss = pcm_loss(input_wavs, pred_wavs, target_wavs)
 
-        if params.combined_loss:
+        if params.combined_loss or stage != "train":
             predicted_features = compute_features(pred_wavs)
             target_features = compute_features(target_wavs)
 
@@ -435,8 +435,11 @@ class SEBrain(sb.core.Brain):
                     self.effective_feature_losses[idx] = feature_losses[layer_num]
                 total_feature_loss = torch.sum(self.effective_feature_losses / self.feature_weights)
 
-            r1, r2 = self.weights_ratio.split(":")
-            loss = float(r1) * basic_loss + float(r2) * total_feature_loss.to(params.device)
+            if params.combined_loss:
+                r1, r2 = self.weights_ratio.split(":")
+                loss = float(r1) * basic_loss + float(r2) * total_feature_loss.to(params.device)
+            else:
+                loss = basic_loss
         else:
             loss = basic_loss
 
