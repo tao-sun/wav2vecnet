@@ -65,7 +65,7 @@ if not os.path.exists(params.enhanced_folder):
     os.mkdir(params.enhanced_folder)
 
 
-def multiprocess_evaluation(pred_wavs, target_wavs, lengths):
+def compute_pesq(pred_wavs, target_wavs, lengths):
     pesq_scores = Parallel(n_jobs=30)(
         delayed(pesq)(
             fs=params.Sample_rate,
@@ -75,6 +75,10 @@ def multiprocess_evaluation(pred_wavs, target_wavs, lengths):
         )
         for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
     )
+    return pesq_scores
+
+
+def compute_composite(pred_wavs, target_wavs, lengths):
     composites = Parallel(n_jobs=30)(
         delayed(composite)(
             fs=params.Sample_rate,
@@ -89,6 +93,10 @@ def multiprocess_evaluation(pred_wavs, target_wavs, lengths):
         cbaks.append(cbak)
         covls.append(covl)
 
+    return csigs, cbaks, covls
+
+
+def compute_ssnr(pred_wavs, target_wavs, lengths):
     ssnrs = Parallel(n_jobs=30)(
         delayed(SNRseg)(
             fs=params.Sample_rate,
@@ -97,7 +105,7 @@ def multiprocess_evaluation(pred_wavs, target_wavs, lengths):
         )
         for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
     )
-    return pesq_scores, csigs, cbaks, covls, ssnrs
+    return ssnrs
 
 
 def snr(pred_wavs, target_wavs, scale=True):
@@ -445,23 +453,35 @@ class SEBrain(sb.core.Brain):
 
         stats = {}
         if stage != "train":
-            pesq_scores, csigs, cbaks, covls, ssnrs = multiprocess_evaluation(
+            pesq_scores = compute_pesq(
+                pred_wavs.cpu().numpy(),
+                target_wavs.cpu().numpy(),
+                np.array([length]),
+            )
+
+            ssnrs = compute_ssnr(
                 pred_wavs.cpu().numpy(),
                 target_wavs.cpu().numpy(),
                 np.array([length]),
             )
 
             stats["basic_loss"] = basic_loss
-            if params.combined_loss:
-                stats["feature_loss"] = total_feature_loss
-                for i, feature_loss in enumerate(feature_losses):
-                    stats["fl[{idx}]".format(idx=i)] = feature_loss
+
+            stats["feature_loss"] = total_feature_loss
+            for i, feature_loss in enumerate(feature_losses):
+                stats["fl[{idx}]".format(idx=i)] = feature_loss
+
             stats['snr'] = [snr(pred_wavs, target_wavs, False)]
             stats["ssnrs"] = ssnrs
             # stats['snr_scaled'] = [snr(pred_wavs, target_wavs)]
             stats['si_sdr'] = [sisdr(pred_wavs, target_wavs)]
             stats["pesq"] = pesq_scores
             if stage == "test":
+                csigs, cbaks, covls, ssnrs = compute_composite(
+                    pred_wavs.cpu().numpy(),
+                    target_wavs.cpu().numpy(),
+                    np.array([length]),
+                )
                 stats["csigs"] = csigs
                 stats["cbaks"] = cbaks
                 stats["covls"] = covls
