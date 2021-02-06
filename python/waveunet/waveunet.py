@@ -101,10 +101,12 @@ class DownsamplingBlock(nn.Module):
 
 
 class Waveunet(nn.Module):
-    def __init__(self, num_channels, kernel_size, target_output_size, conv_type, res, depth=1, strides=2):
+    def __init__(self, num_levels, features, kernel_size,
+                 target_output_size, conv_type, res,
+                 feature_growth="double", depth=1, strides=2):
         super(Waveunet, self).__init__()
 
-        self.num_levels = len(num_channels)
+        self.num_levels = num_levels
         self.strides = strides
         self.kernel_size = kernel_size
         self.depth = depth
@@ -116,6 +118,8 @@ class Waveunet(nn.Module):
         module.downsampling_blocks = nn.ModuleList()
         module.upsampling_blocks = nn.ModuleList()
 
+        num_channels = [features * i for i in range(1, num_levels + 1)] if feature_growth == "add" else \
+                       [features * 2 ** i for i in range(0, num_levels)]
         for i in range(self.num_levels - 1):
             in_ch = 1 if i == 0 else num_channels[i]
 

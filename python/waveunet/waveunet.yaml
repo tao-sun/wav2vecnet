@@ -3,7 +3,7 @@ seed: 1234
 __set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
 
 dataset: voicebank
-data_folder: /home2/data/voicebank  #* MAzBio vs. AzBio
+data_folder: /home/data/voicebank  #* MAzBio vs. AzBio
 test_clean_folder: !ref <data_folder>/TEST/clean
 
 output_folder: ./results/waveunet/voicebank  #* MAzBio vs. AzBio
@@ -14,10 +14,12 @@ enhanced_folder: !ref <output_folder>/enhanced
 pretrained_model: "wav2vec"  # "dfl" or "wav2vec"
 
 # Wav2vec version
-wav2vec_version: 2.0  #* MAzBio vs. AzBio
+wav2vec_version: 1.0  #* MAzBio vs. AzBio
 wav2vec1_model: ./data/pretrained/wav2vec_large.pt
 wav2vec2_model: ./data/pretrained/libri960_big.pt
-wav2vec_loss_layers: [0, 1, 2, 3, 4, 5, 6]  #* MAzBio vs. AzBio
+wav2vec_loss_layers: [1, 2, 3, 4, 5, 6]  #* MAzBio vs. AzBio
+
+set_weights_epoch: 1
 
 # dfl:
 dfl_model: ./data/pretrained/dfl.pt
@@ -40,9 +42,9 @@ hdf5_valid: !ref <data_folder>/valid.hdf5
 combined_loss: True
 weights_ratio: 0.8:0.2
 basic_loss: MSE # MSE, SM, RI, or PCM
-number_of_epochs: 100
-N_batch: 25 # TIMIT
-lr: 0.001
+number_of_epochs: 150
+N_batch: 20 # TIMIT
+lr: 0.0001
 weight_decay: 0.001
 Sample_rate: 16000
 
@@ -53,7 +55,10 @@ use_device2: False
 
 output_size: 1 #* MAzBio vs. AzBio
 model: !new:waveunet.Waveunet
-    num_channels: [32, 64, 128, 256, 512, 1024]
+    num_levels: 12 # 6
+    features: 24 # 32
+    #num_channels: [32, 64, 128, 256, 512, 1024]
+    feature_growth: 'add'  # 'add' or 'double'
     kernel_size: 5
     target_output_size: !ref <output_size> * <Sample_rate>
     conv_type: 'gn'

@@ -365,6 +365,18 @@ test_set = DataLoader(params.test_dataset,
 
 
 class SEBrain(sb.core.Brain):
+    def __init__(
+            self,
+            modules=None,
+            optimizer=None,
+            first_inputs=None,
+            auto_mix_prec=False,
+    ):
+        super(SEBrain, self).__init__(modules, optimizer, first_inputs, auto_mix_prec)
+        if params.pretrained_model == "wav2vec":
+            self.feature_weights = torch.ones(len(params.wav2vec_loss_layers), device=params.device)
+            self.weights_ratio = params.weights_ratio
+
     def compute_forward(self, x, stage="train", init_params=False):
         _, self.input_wavs, _ = x
         wavs = self.input_wavs.to(params.device)
@@ -408,18 +420,22 @@ class SEBrain(sb.core.Brain):
         if params.combined_loss:
             predicted_features = compute_features(pred_wavs)
             target_features = compute_features(target_wavs)
-            total_feature_loss = 0
+
             feature_losses = []
+            total_feature_loss = 0.0
             for i in range(len(predicted_features)):
                 feature_loss = params.mse_cost(predicted_features[i], target_features[i])
                 feature_losses.append(feature_loss)
-                if params.pretrained_model == "wav2vec":
-                    if i in params.wav2vec_loss_layers:
-                        total_feature_loss += feature_loss
-                elif params.pretrained_model == "dfl":
+                if params.pretrained_model == "dfl":
                     total_feature_loss += feature_loss
 
-            r1, r2 = params.weights_ratio.split(":")
+            if params.pretrained_model == "wav2vec":
+                self.effective_feature_losses = torch.zeros(len(params.wav2vec_loss_layers), device=params.device)
+                for idx, layer_num in enumerate(params.wav2vec_loss_layers):
+                    self.effective_feature_losses[idx] = feature_losses[layer_num]
+                total_feature_loss = torch.sum(self.effective_feature_losses / self.feature_weights)
+
+            r1, r2 = self.weights_ratio.split(":")
             loss = float(r1) * basic_loss + float(r2) * total_feature_loss.to(params.device)
         else:
             loss = basic_loss
@@ -511,6 +527,11 @@ class SEBrain(sb.core.Brain):
         params.checkpointer.save_and_keep_only(
             meta={"pesq_score": pesq_score}, max_keys=["pesq_score"],
         )
+
+        # if params.pretrained_model == "wav2vec" and epoch == params.set_weights_epoch:
+        #     self.weights_ratio = params.weights_ratio
+        #     self.feature_weights = torch.div(self.effective_feature_losses, torch.sum(self.effective_feature_losses))
+        #     print("feature weights: %s" % self.feature_weights)
 
         if epoch % 5 == 0:
             # Load best checkpoint for evaluation
