@@ -1,0 +1,119 @@
+# ################################
+# Model: FCN SE baseline
+# From paper: "End-to-End Waveform Utterance Enhancement for Direct Evaluation
+# Metrics Optimization by Fully Convolutional Neural Networks", TASLP, 2018
+# Authors: Szu-Wei, Fu 2020
+# ################################
+
+
+# Seed needs to be set at top of yaml, before objects with parameters are made
+seed: 1234
+__set_seed: !!python/object/apply:torch.manual_seed [!ref <seed>]
+
+dataset: voicebank
+data_folder: /home/data/voicebank
+test_clean_folder: !ref <data_folder>/TEST/clean
+
+output_folder: !ref ./results/voicebank_tasnet
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+enhanced_folder: !ref <output_folder>/enhanced
+
+# Wav2vec version
+wav2vec_version: 1.0
+
+# Basic parameters
+use_tensorboard: True
+tensorboard_logs: !ref <output_folder>/logs/
+
+# Data files
+csv_train: !ref <output_folder>/save/train.csv
+csv_valid: !ref <output_folder>/save/valid.csv
+csv_test: !ref <output_folder>/save/test.csv
+
+# Training parameters
+N_epochs: 200
+batch_size: 2
+train_onthefly: False
+loss_fn: 'sisnr'
+lr: 0.00015
+device: 'cuda:0'
+progressbar: True
+
+
+sample_rate: 16000
+clip_grad_norm: 5
+loss_upper_lim: 999999  # this is the upper limit for an acceptable loss
+# if True, the training sequences are cut to a specified length
+limit_training_signal_len: False
+# this is the length of sequences if we choose to limit
+# the signal length of training sequences
+training_signal_len: 64000
+threshold_byloss: False
+
+train_loader: !new:speechbrain.data_io.data_io.DataLoaderFactory
+    csv_file: !ref <csv_train>
+    batch_size: !ref <batch_size>
+    csv_read: [noisy_wav, clean_wav]
+    sentence_sorting: ascending
+    output_folder: !ref <output_folder>
+
+valid_loader: !new:speechbrain.data_io.data_io.DataLoaderFactory
+    csv_file: !ref <csv_valid>
+    batch_size: !ref <batch_size>
+    csv_read: [noisy_wav, clean_wav]
+    sentence_sorting: ascending
+    replacements:
+        $data_folder: !ref <data_folder>
+
+test_loader: !new:speechbrain.data_io.data_io.DataLoaderFactory
+    csv_file: !ref <csv_test>
+    batch_size: 1
+    csv_read: [noisy_wav, clean_wav]
+    replacements:
+        $data_folder: !ref <data_folder>
+
+augmentation: !new:speechbrain.lobes.augment.tdsa.TimeDomainSpecAugment
+    sample_rate: 8000
+    speeds: [95, 100, 105]
+
+
+MaskNet: !new:speechbrain.lobes.models.conv_tasnet.MaskNet
+    N: 256
+    B: 256
+    H: 512
+    P: 3
+    X: 8
+    R: 4
+    C: 2
+    norm_type: 'gLN'
+    causal: False
+    mask_nonlinear: 'relu'
+
+Encoder: !new:speechbrain.lobes.models.conv_tasnet.Encoder
+    L: 21
+    N: 256
+
+Decoder: !new:speechbrain.lobes.models.conv_tasnet.Decoder
+    # N: 256
+    L: 20
+
+optimizer: !new:speechbrain.nnet.optimizers.Adam_Optimizer
+    learning_rate: !ref <lr>
+
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <N_epochs>
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        encoder: !ref <Encoder>
+        decoder: !ref <Decoder>
+        masknet: !ref <MaskNet>
+        optimizer: !ref <optimizer>
+        counter: !ref <epoch_counter>
+
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+    summary_fns:
+        SISNR: !name:speechbrain.utils.train_logger.summarize_error_rate
