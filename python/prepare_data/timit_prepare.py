@@ -640,6 +640,6 @@ def check_timit_folders(*folders):
         if not os.path.exists(folder):
             raise FileNotFoundError(
                 f"the folder {folder} does not exist (it is expected in "
-                "the Voicebank dataset)"
+                "the timit dataset)"
             )
 
