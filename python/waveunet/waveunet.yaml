@@ -11,19 +11,23 @@ save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 enhanced_folder: !ref <output_folder>/enhanced
 
-pretrained_model: "wav2vec"  # "dfl" or "wav2vec"
+pretrained_model: "pase"  # "dfl", "wav2vec", or "pase"
 
 # Wav2vec version
 wav2vec_version: 1.0  #* MAzBio vs. AzBio
 wav2vec1_model: ./data/pretrained/wav2vec_large.pt
 wav2vec2_model: ./data/pretrained/libri960_big.pt
-wav2vec_loss_layers: [1, 2, 3, 4, 5, 6]  #* MAzBio vs. AzBio
+wav2vec_loss_layers: [0, 1]  #* MAzBio vs. AzBio
 
 set_weights_epoch: 1
 
 # dfl:
 dfl_model: ./data/pretrained/dfl.pt
 dfl_layers: 6
+
+# pase
+pase_model: ./data/pretrained/FE_e199.ckpt
+pase_cfg: ./data/pretrained/PASE+.cfg
 
 # Basic parameters
 use_tensorboard: False
@@ -40,10 +44,10 @@ hdf5_valid: !ref <data_folder>/valid.hdf5
 
 # Training Parameters
 combined_loss: True
-weights_ratio: 0.8:0.2
+weights_ratio: 1.00:0.01
 basic_loss: MSE # MSE, SM, RI, or PCM
 number_of_epochs: 150
-N_batch: 20 # TIMIT
+N_batch: 30 # TIMIT
 lr: 0.0001
 weight_decay: 0.001
 Sample_rate: 16000
@@ -55,8 +59,8 @@ use_device2: False
 
 output_size: 1 #* MAzBio vs. AzBio
 model: !new:waveunet.Waveunet
-    num_levels: 12 # 6
-    features: 24 # 32
+    num_levels: 12  # 6 or 12
+    features: 24  # 32 or 24
     #num_channels: [32, 64, 128, 256, 512, 1024]
     feature_growth: 'add'  # 'add' or 'double'
     kernel_size: 5

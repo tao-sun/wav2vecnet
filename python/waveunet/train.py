@@ -242,6 +242,7 @@ if params.pretrained_model == "wav2vec":
             wav2vec.to(torch.device(params.device))
         for param in wav2vec.parameters():
             param.requires_grad = False
+        wav2vec.eval()
     elif params.wav2vec_version == 2.0:
         cp = torch.load(params.wav2vec2_model)
         wav2vec2 = Wav2Vec2Model.build_model(cp['args'])
@@ -254,6 +255,7 @@ if params.pretrained_model == "wav2vec":
 
         for param in wav2vec2.parameters():
             param.requires_grad = False
+        wav2vec2.eval()
 elif params.pretrained_model == "dfl":
     featurenet = FeatureNet(2, [15, 7], [1, 2])
     featurenet.load_state_dict(torch.load(params.dfl_model))
@@ -263,6 +265,20 @@ elif params.pretrained_model == "dfl":
         featurenet.to(torch.device(params.device))
     for param in featurenet.parameters():
         param.requires_grad = False
+    featurenet.eval()
+elif params.pretrained_model == "pase":
+    from pase.models.frontend import wf_builder
+    pase = wf_builder(params.pase_cfg).eval()
+    pase.load_pretrained(params.pase_model, load_last=True, verbose=True)
+
+    if params.use_device2 and torch.cuda.device_count() > 1:
+        pase.to(torch.device(params.device2))
+    else:
+        pase.to(torch.device(params.device))
+    for param in pase.parameters():
+        param.requires_grad = False
+    pase.eval()
+
 else:
     raise Exception("Illegal 'pretrained_model' set in the .yaml file! Please choose from 'wav2vec' and 'dfl'.")
 
@@ -277,24 +293,30 @@ def compute_features(x):
             return compute_features2(x)
     elif params.pretrained_model == "dfl":
         return compute_features_dfl(x)
+    elif params.pretrained_model == "pase":
+        return compute_features_pase(x)
 
 
 def compute_features1(wavs):
-    feature_extractor = wav2vec.feature_extractor
+    wavs1 = wav2vec.feature_extractor(wavs)
 
-    features = []
-    wavs = wavs.unsqueeze(1)
-    for i, conv in enumerate(feature_extractor.conv_layers):
-        residual = wavs
-        wavs = conv(wavs)
-        if feature_extractor.skip_connections and wavs.size(1) == residual.size(1):
-            tsz = wavs.size(2)
-            r_tsz = residual.size(2)
-            residual = residual[..., :: r_tsz // tsz][..., :tsz]
-            wavs = (wavs + residual) * feature_extractor.residual_scale
+    # features = []
+    # wavs = wavs.unsqueeze(1)
+    #
+    # for i, conv in enumerate(feature_extractor.conv_layers):
+    #     residual = wavs
+    #     wavs = conv(wavs)
+    #     if feature_extractor.skip_connections and wavs.size(1) == residual.size(1):
+    #         tsz = wavs.size(2)
+    #         r_tsz = residual.size(2)
+    #         residual = residual[..., :: r_tsz // tsz][..., :tsz]
+    #         wavs = (wavs + residual) * feature_extractor.residual_scale
+    #
+    #     features.append(wavs)
 
-        features.append(wavs)
-    return features
+    wavs2 = wav2vec.feature_aggregator(wavs1)
+
+    return [wavs1, wavs2]
 
 
 def compute_features2(wavs):
@@ -321,6 +343,11 @@ def compute_features_dfl(wavs):
         wavs = F.leaky_relu(norm_layer(wavs))
         features.append(wavs)
     return features
+
+
+def compute_features_pase(wavs):
+    wavs = pase(torch.unsqueeze(wavs, 1))
+    return [wavs]
 
 
 # Prepare data
@@ -352,7 +379,8 @@ if params.basic_loss == "MSE":
                            batch_size=params.N_batch,
                            shuffle=True,
                            num_workers=1,
-                           worker_init_fn=worker_init_fn)
+                           worker_init_fn=worker_init_fn,
+                           pin_memory=True)
 else:
     train_set = DataLoader(params.train_dataset2,
                            batch_size=params.N_batch,
@@ -364,12 +392,14 @@ valid_set = DataLoader(params.valid_dataset,
                        batch_size=None,
                        shuffle=False,
                        num_workers=1,
-                       worker_init_fn=worker_init_fn)
+                       worker_init_fn=worker_init_fn,
+                       pin_memory=True)
 test_set = DataLoader(params.test_dataset,
                        batch_size=None,
                        shuffle=False,
                        num_workers=1,
-                       worker_init_fn=worker_init_fn)
+                       worker_init_fn=worker_init_fn,
+                       pin_memory=True)
 
 
 class SEBrain(sb.core.Brain):
@@ -385,7 +415,8 @@ class SEBrain(sb.core.Brain):
         self.input_wavs = None
         if params.pretrained_model == "wav2vec":
             self.feature_weights = torch.ones(len(params.wav2vec_loss_layers), device=params.device)
-            self.weights_ratio = params.weights_ratio
+
+        self.weights_ratio = params.weights_ratio
 
     def compute_forward(self, x, stage="train", init_params=False):
         _, self.input_wavs, _ = x
@@ -436,7 +467,7 @@ class SEBrain(sb.core.Brain):
             for i in range(len(predicted_features)):
                 feature_loss = params.mse_cost(predicted_features[i], target_features[i])
                 feature_losses.append(feature_loss)
-                if params.pretrained_model == "dfl":
+                if params.pretrained_model != "wav2vec":
                     total_feature_loss += feature_loss
 
             if params.pretrained_model == "wav2vec":
@@ -494,7 +525,7 @@ class SEBrain(sb.core.Brain):
                 enhance_path = os.path.join(params.enhanced_folder, name + ".wav")
                 sf.write(enhance_path, pred_wavs.cpu().numpy().squeeze(), params.Sample_rate)
                 noisy_path = os.path.join(params.enhanced_folder, name + "_noisy.wav")
-                sf.write(noisy_path, self.input_wavs.cpu().numpy().squeeze(), params.Sample_rate)
+                sf.write(noisy_path, input_wavs.cpu().numpy().squeeze(), params.Sample_rate)
                 clean_path = os.path.join(params.enhanced_folder, name + "_clean.wav")
                 sf.write(clean_path, target_wavs.cpu().numpy().squeeze(), params.Sample_rate)
 
