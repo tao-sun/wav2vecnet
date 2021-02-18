@@ -38,7 +38,8 @@ class SeparationDataset(Dataset):
         # Find out which slice of targets we want to read
         audio_idx = self.start_pos.bisect_right(index)
         if audio_idx > 0:
-            index = index - self.start_pos[audio_idx - 1]
+            # rel_indx is the frame index within a song
+            rel_index = index - self.start_pos[audio_idx - 1]
 
         name = self.hdf_dataset[str(audio_idx)].attrs["ID"]
         # Check length of audio signal
@@ -50,7 +51,7 @@ class SeparationDataset(Dataset):
             start_target_pos = np.random.randint(0, max(clean_length - self.shapes["output_frames"] + 1, 1))
         else:
             # Map item index to sample position within song
-            start_target_pos = index * self.shapes["output_frames"]
+            start_target_pos = rel_index * self.shapes["output_frames"]
 
         # READ INPUTS
         # Check front padding
