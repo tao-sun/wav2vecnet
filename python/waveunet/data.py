@@ -40,7 +40,7 @@ class SeparationDataset(Dataset):
         if audio_idx > 0:
             index = index - self.start_pos[audio_idx - 1]
 
-        name = self.hdf_dataset[str(index)].attrs["ID"]
+        name = self.hdf_dataset[str(audio_idx)].attrs["ID"]
         # Check length of audio signal
         audio_length = self.hdf_dataset[str(audio_idx)].attrs["length"]
         clean_length = self.hdf_dataset[str(audio_idx)].attrs["clean_length"]
