@@ -11,11 +11,15 @@ import os, sys
 import speechbrain as sb
 from speechbrain.utils.train_logger import summarize_average
 import torch
+from torch.utils.data import DataLoader
 from speechbrain.utils.checkpoints import ckpt_recency
 from speechbrain.nnet.loss.stoi_loss import stoi_loss
 from speechbrain.nnet.losses import get_si_snr_with_pitwrapper
 
 import torch.nn.functional as F
+from utils import worker_init_fn
+from prepare_data.hdf5_prepare import create_hdf5
+
 
 # This hack needed to import data preparation script from ..
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -59,8 +63,7 @@ elif params.dataset == "voicebank":
 
 
 class CTN_Brain(sb.core.Brain):
-    def compute_forward(self, inputs, stage="train", init_params=False):
-
+    def compute_forward(self, batch, stage="train", init_params=False):
         # if hasattr(params, "env_corrupt"):
         #     if stage == "train":
         #         wav_lens = torch.tensor(
@@ -68,7 +71,16 @@ class CTN_Brain(sb.core.Brain):
         #         ).to(params.device)
         #         mixture = params.augmentation(mixture, wav_lens, init_params)
 
-        mixture = inputs.to(params.device)
+        inputs, targets = batch
+
+        mixture = torch.squeeze(inputs[1].to(params.device), 1)
+        clean = torch.squeeze(targets[1].to(params.device), 1)
+        noise = mixture - clean
+        targets = torch.cat([clean.unsqueeze(-1), noise.unsqueeze(-1)], dim=-1)
+        # if stage == "train" and params.limit_training_signal_len:
+        #     with torch.no_grad():
+        #         mixture, targets = self.cut_signals(mixture, targets)
+
         mixture_w = params.Encoder(mixture, init_params)
         est_mask = params.MaskNet(mixture_w, init_params)
         est_source = params.Decoder(mixture_w, est_mask, init_params)
@@ -81,7 +93,7 @@ class CTN_Brain(sb.core.Brain):
         else:
             est_source = est_source[:, :T_origin, :]
 
-        return est_source
+        return est_source, targets
 
     def compute_objectives(self, predictions, targets):
         if params.loss_fn == "sisnr":
@@ -91,32 +103,34 @@ class CTN_Brain(sb.core.Brain):
             raise ValueError("Not Correct Loss Function Type")
 
     def fit_batch(self, batch):
-        device = params.device
+
+
         # train_onthefly option enables data augmentation, by creating random mixtures within the batch
-        if params.train_onthefly:
-            bs = batch[0][1].shape[0]
-            perm = torch.randperm(bs)
+        # if params.train_onthefly:
+        #     bs = batch[0][1].shape[0]
+        #     perm = torch.randperm(bs)
+        #
+        #     T = 24000
+        #     Tmax = max((batch[0][1].shape[-1] - T) // 10, 1)
+        #     Ts = torch.randint(0, Tmax, (1,))
+        #     source1 = batch[1][1][perm, Ts : Ts + T].to(device)
+        #     source2 = batch[2][1][:, Ts : Ts + T].to(device)
+        #
+        #     ws = torch.ones(2).to(device)
+        #     ws = ws / ws.sum()
+        #
+        #     inputs = ws[0] * source1 + ws[1] * source2
+        #     targets = torch.cat(
+        #         [source1.unsqueeze(1), source2.unsqueeze(1)], dim=1
+        #     )
+        # else:
+        # inputs, targets = batch
+        # inputs = batch[0][1].to(device)
+        # targets = torch.cat(
+        #     [batch[1][1].unsqueeze(-1), (batch[0][1] - batch[1][1]).unsqueeze(-1)], dim=-1
+        # ).to(device)
 
-            T = 24000
-            Tmax = max((batch[0][1].shape[-1] - T) // 10, 1)
-            Ts = torch.randint(0, Tmax, (1,))
-            source1 = batch[1][1][perm, Ts : Ts + T].to(device)
-            source2 = batch[2][1][:, Ts : Ts + T].to(device)
-
-            ws = torch.ones(2).to(device)
-            ws = ws / ws.sum()
-
-            inputs = ws[0] * source1 + ws[1] * source2
-            targets = torch.cat(
-                [source1.unsqueeze(1), source2.unsqueeze(1)], dim=1
-            )
-        else:
-            inputs = batch[0][1].to(device)
-            targets = torch.cat(
-                [batch[1][1].unsqueeze(-1), (batch[0][1] - batch[1][1]).unsqueeze(-1)], dim=-1
-            ).to(device)
-
-        predictions = self.compute_forward(inputs)
+        predictions, targets = self.compute_forward(batch)
         loss = self.compute_objectives(predictions, targets)
 
         loss.backward()
@@ -125,14 +139,10 @@ class CTN_Brain(sb.core.Brain):
         return {"loss": loss.detach()}
 
     def evaluate_batch(self, batch, stage="test"):
-        device = params.device
-
-        inputs = batch[0][1].to(device)
-        targets = torch.cat(
-            [batch[1][1].unsqueeze(-1), batch[2][1].unsqueeze(-1)], dim=-1
-        ).to(device)
-
-        predictions = self.compute_forward(inputs, stage="test")
+        batch = [(None, batch[0][1].squeeze(0), None), (None, batch[1][1].squeeze(0), None)]
+        predictions, targets = self.compute_forward(batch, stage=stage)
+        # predictions = torch.reshape(predictions, (1, 1, predictions.shape[0] * predictions.shape[1] * predictions.shape[2]))
+        # targets = torch.reshape(targets, (1, 1, targets.shape[0] * targets.shape[1] * targets.shape[2]))
         loss = self.compute_objectives(predictions, targets)
         return {"loss": loss.detach()}
 
@@ -150,12 +160,45 @@ class CTN_Brain(sb.core.Brain):
             importance_keys=[ckpt_recency, lambda c: -c.meta["av_loss"]],
         )
 
+    def cut_signals(self, mixture, targets):
+        """This function selects a random segment of a given length withing the mixture.
+        The corresponding targets are selected accordingly"""
+        randstart = torch.randint(
+            0,
+            1 + max(0, mixture.shape[1] - params.training_signal_len),
+            (1,),
+        ).item()
+        targets = targets[
+                  :, randstart: randstart + params.training_signal_len, :
+                  ]
+        mixture = mixture[
+                  :, randstart: randstart + params.training_signal_len
+                  ]
+        return mixture, targets
 
-train_loader = params.train_loader()
-valid_loader = params.valid_loader()
-test_loader = params.test_loader()
 
-first_x, first_y = next(iter(train_loader))
+if not os.path.exists(params.hdf5_train):
+    create_hdf5(params.csv_train, params.hdf5_train, params.sample_rate)
+
+train_loader = DataLoader(params.train_dataset,
+                          batch_size=params.batch_size,
+                          shuffle=True,
+                          num_workers=1,
+                          worker_init_fn=worker_init_fn,
+                          pin_memory=False)
+valid_loader = DataLoader(params.valid_dataset,
+                          batch_size=1,
+                          shuffle=False,
+                          num_workers=1,
+                          worker_init_fn=worker_init_fn,
+                          pin_memory=False)
+test_loader = DataLoader(params.test_dataset,
+                          batch_size=1,
+                          shuffle=False,
+                          num_workers=1,
+                          worker_init_fn=worker_init_fn,
+                          pin_memory=False)
+first_batch = next(iter(train_loader))
 
 ctn = CTN_Brain(
     modules=[
@@ -164,7 +207,7 @@ ctn = CTN_Brain(
         params.Decoder.to(params.device),
     ],
     optimizer=params.optimizer,
-    first_inputs=[first_x[1]],
+    first_inputs=[first_batch],
 )
 
 params.checkpointer.recover_if_possible(lambda c: -c.meta["av_loss"])

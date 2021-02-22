@@ -14,7 +14,7 @@ dataset: voicebank
 data_folder: /home/data/voicebank
 test_clean_folder: !ref <data_folder>/TEST/clean
 
-output_folder: !ref ./results/voicebank_tasnet
+output_folder: !ref ./results/tasnet/voicebank
 save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 enhanced_folder: !ref <output_folder>/enhanced
@@ -31,10 +31,14 @@ csv_train: !ref <output_folder>/save/train.csv
 csv_valid: !ref <output_folder>/save/valid.csv
 csv_test: !ref <output_folder>/save/test.csv
 
+hdf5_train: !ref <data_folder>/train.hdf5
+hdf5_test: !ref <data_folder>/test.hdf5
+hdf5_valid: !ref <data_folder>/valid.hdf5
+
 # Training parameters
 N_epochs: 200
-batch_size: 2
-train_onthefly: False
+batch_size: 5
+#train_onthefly: False
 loss_fn: 'sisnr'
 lr: 0.00015
 device: 'cuda:0'
@@ -45,26 +49,30 @@ sample_rate: 16000
 clip_grad_norm: 5
 loss_upper_lim: 999999  # this is the upper limit for an acceptable loss
 # if True, the training sequences are cut to a specified length
-limit_training_signal_len: False
+limit_training_signal_len: true
 # this is the length of sequences if we choose to limit
 # the signal length of training sequences
-training_signal_len: 64000
+training_signal_len: 32000
 threshold_byloss: False
 
-train_loader: !new:speechbrain.data_io.data_io.DataLoaderFactory
-    csv_file: !ref <csv_train>
-    batch_size: !ref <batch_size>
-    csv_read: [noisy_wav, clean_wav]
-    sentence_sorting: ascending
-    output_folder: !ref <output_folder>
+train_dataset: !new:data.SeparationDataset
+    hdf_file: !ref <hdf5_train>
+    sr: !ref <sample_rate>
+    input_frames: !ref <sample_rate> * 1
+    channels: 1
+    random_hops: False
 
-valid_loader: !new:speechbrain.data_io.data_io.DataLoaderFactory
-    csv_file: !ref <csv_valid>
-    batch_size: !ref <batch_size>
-    csv_read: [noisy_wav, clean_wav]
-    sentence_sorting: ascending
-    replacements:
-        $data_folder: !ref <data_folder>
+valid_dataset: !new:data.EvaluationDataset
+    hdf_file: !ref <hdf5_valid>
+    sr: !ref <sample_rate>
+    input_frames: !ref <sample_rate> * 1
+    channels: 1
+
+test_dataset: !new:data.EvaluationDataset
+    hdf_file: !ref <hdf5_test>
+    sr: !ref <sample_rate>
+    input_frames: !ref <sample_rate> * 1
+    channels: 1
 
 test_loader: !new:speechbrain.data_io.data_io.DataLoaderFactory
     csv_file: !ref <csv_test>
