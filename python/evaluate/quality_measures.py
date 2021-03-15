@@ -4,7 +4,6 @@ import scipy
 import pesq as pypesq # https://github.com/ludlows/python-pesq
 import numpy as np
 from numba import jit
-from .util import extract_overlapped_windows
 
 def SNRseg(clean_speech, processed_speech,fs, frameLen=0.03, overlap=0.75):
     eps=np.finfo(np.float64).eps
@@ -435,3 +434,15 @@ def cepstrum_distance(clean_speech, processed_speech, fs, frameLen=0.03, overlap
     IS = np.sort(IS_dist)
     cep_mean= np.mean( IS[ 0: IS_len]) 
     return cep_mean
+
+
+def extract_overlapped_windows(x,nperseg,noverlap,window=None):
+    # source: https://github.com/scipy/scipy/blob/v1.2.1/scipy/signal/spectral.py
+    step = nperseg - noverlap
+    shape = x.shape[:-1]+((x.shape[-1]-noverlap)//step, nperseg)
+    strides = x.strides[:-1]+(step*x.strides[-1], x.strides[-1])
+    result = np.lib.stride_tricks.as_strided(x, shape=shape,
+                                             strides=strides)
+    if window is not None:
+        result = window * result
+    return result

@@ -40,6 +40,8 @@ class SeparationDataset(Dataset):
         if audio_idx > 0:
             # rel_indx is the frame index within a song
             rel_index = index - self.start_pos[audio_idx - 1]
+        else:
+            rel_index = index
 
         name = self.hdf_dataset[str(audio_idx)].attrs["ID"]
         # Check length of audio signal

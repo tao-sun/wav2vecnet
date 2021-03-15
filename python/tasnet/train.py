@@ -20,12 +20,17 @@ import torch.nn.functional as F
 from utils import worker_init_fn
 from prepare_data.hdf5_prepare import create_hdf5
 
+import numpy as np
+
+from evaluate.util import compute_pesq, compute_composite, compute_ssnr, sisdr, snr
 
 # This hack needed to import data preparation script from ..
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(current_dir))
 from prepare_data.timit_prepare import prepare_timit
 from prepare_data.voicebank_prepare import prepare_voicebank
+
+import soundfile as sf
 
 from fairseq.models.wav2vec import Wav2VecModel, Wav2Vec2Model
 
@@ -72,7 +77,6 @@ class CTN_Brain(sb.core.Brain):
         #         mixture = params.augmentation(mixture, wav_lens, init_params)
 
         inputs, targets = batch
-
         mixture = torch.squeeze(inputs[1].to(params.device), 1)
         clean = torch.squeeze(targets[1].to(params.device), 1)
         noise = mixture - clean
@@ -95,12 +99,13 @@ class CTN_Brain(sb.core.Brain):
 
         return est_source, targets
 
-    def compute_objectives(self, predictions, targets):
+    def compute_objectives(self, predictions, targets, stage="train"):
         if params.loss_fn == "sisnr":
             loss = get_si_snr_with_pitwrapper(targets, predictions)
-            return loss
         else:
             raise ValueError("Not Correct Loss Function Type")
+
+        return loss
 
     def fit_batch(self, batch):
 
@@ -139,26 +144,92 @@ class CTN_Brain(sb.core.Brain):
         return {"loss": loss.detach()}
 
     def evaluate_batch(self, batch, stage="test"):
+        inputs, targets = batch
+        _, input_wavs, _ = inputs
+        names, target_wavs, length = targets
+
         batch = [(None, batch[0][1].squeeze(0), None), (None, batch[1][1].squeeze(0), None)]
         predictions, targets = self.compute_forward(batch, stage=stage)
         # predictions = torch.reshape(predictions, (1, 1, predictions.shape[0] * predictions.shape[1] * predictions.shape[2]))
         # targets = torch.reshape(targets, (1, 1, targets.shape[0] * targets.shape[1] * targets.shape[2]))
-        loss = self.compute_objectives(predictions, targets)
-        return {"loss": loss.detach()}
+        loss = self.compute_objectives(predictions, targets, stage)
+
+        stats = {}
+        if stage != "train":
+            input_wavs = torch.reshape(input_wavs, (1, input_wavs.shape[1] * input_wavs.shape[2] * input_wavs.shape[3]))
+            pred_wavs = torch.reshape(predictions[:, :, 1], (1, predictions.shape[0] * predictions.shape[1]))
+            target_wavs = torch.reshape(targets[:, :, 0], (1, targets.shape[0] * targets.shape[1]))
+
+            pesq_scores = compute_pesq(
+                pred_wavs.cpu().numpy(),
+                target_wavs.cpu().numpy(),
+                np.array([length]),
+                params.sample_rate
+            )
+
+            ssnrs = compute_ssnr(
+                pred_wavs.cpu().numpy(),
+                target_wavs.cpu().numpy(),
+                np.array([length]),
+                params.sample_rate
+            )
+
+            stats["basic_loss"] = loss
+
+            # stats["feature_loss"] = total_feature_loss
+            # for i, feature_loss in enumerate(feature_losses):
+            #     stats["fl[{idx}]".format(idx=i)] = feature_loss
+
+            stats['snr'] = [snr(pred_wavs, target_wavs, False)]
+            stats["ssnrs"] = ssnrs
+            stats['si_sdr'] = [sisdr(pred_wavs, target_wavs)]
+            stats["pesq"] = pesq_scores
+            if stage == "test":
+                csigs, cbaks, covls = compute_composite(
+                    pred_wavs.cpu().numpy(),
+                    target_wavs.cpu().numpy(),
+                    np.array([length]),
+                    params.sample_rate
+                )
+                stats["csigs"] = csigs
+                stats["cbaks"] = cbaks
+                stats["covls"] = covls
+
+            stats["stoi"] = -stoi_loss(pred_wavs, target_wavs, torch.Tensor([length])).unsqueeze(0)
+
+            if stage == "test":
+                enhance_path = os.path.join(params.enhanced_folder, names[0] + ".wav")
+                sf.write(enhance_path, pred_wavs.cpu().numpy().squeeze(), params.sample_rate)
+                noisy_path = os.path.join(params.enhanced_folder, names[0] + "_noisy.wav")
+                sf.write(noisy_path, input_wavs.cpu().numpy().squeeze(), params.sample_rate)
+                clean_path = os.path.join(params.enhanced_folder, names[0] + "_clean.wav")
+                sf.write(clean_path, target_wavs.cpu().numpy().squeeze(), params.sample_rate)
+
+        stats["loss"] = loss.detach()
+        return stats
 
     def on_epoch_end(self, epoch, train_stats, valid_stats):
-
         av_loss = summarize_average(valid_stats["loss"])
         if params.use_tensorboard:
             params.train_logger.log_stats({"Epoch": epoch}, train_stats, valid_stats)
-        print("Completed epoch %d" % epoch)
-        print("Train SI-SNR: %.3f" % -summarize_average(train_stats["loss"]))
-        print("Valid SI-SNR: %.3f" % -summarize_average(valid_stats["loss"]))
 
-        params.checkpointer.save_and_keep_only(
-            meta={"av_loss": av_loss},
-            importance_keys=[ckpt_recency, lambda c: -c.meta["av_loss"]],
+        params.train_logger.log_stats(
+            {"Epoch": epoch}, train_stats, valid_stats
         )
+
+        pesq_score = summarize_average(valid_stats["pesq"])
+        params.checkpointer.save_and_keep_only(
+            meta={"pesq_score": pesq_score}, max_keys=["pesq_score"],
+        )
+
+        if epoch % 5 == 0:
+            # Load best checkpoint for evaluation
+            # params.checkpointer.recover_if_possible(max_key="pesq_score")
+            test_stats = self.evaluate(test_loader)
+            params.train_logger.log_stats(
+                stats_meta={"Epoch loaded": params.epoch_counter.current},
+                test_stats=test_stats,
+            )
 
     def cut_signals(self, mixture, targets):
         """This function selects a random segment of a given length withing the mixture.
@@ -210,7 +281,7 @@ ctn = CTN_Brain(
     first_inputs=[first_batch],
 )
 
-params.checkpointer.recover_if_possible(lambda c: -c.meta["av_loss"])
+params.checkpointer.recover_if_possible(lambda c: -c.meta["pesq_score"])
 
 ctn.fit(
     range(params.N_epochs),
@@ -220,4 +291,7 @@ ctn.fit(
 )
 
 test_stats = ctn.evaluate(test_loader)
-print("Test SI-SNR: %.3f" % -summarize_average(test_stats["loss"]))
+params.train_logger.log_stats(
+    stats_meta={"Epoch loaded": params.epoch_counter.current},
+    test_stats=test_stats
+)

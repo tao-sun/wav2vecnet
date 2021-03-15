@@ -32,9 +32,8 @@ from prepare_data.timit_prepare import prepare_timit
 from prepare_data.voicebank_prepare import prepare_voicebank
 from prepare_data.hdf5_prepare import create_hdf5
 
-from evaluate.quality_measures import SNRseg, composite
-
 from fairseq.models.wav2vec import Wav2VecModel, Wav2Vec2Model
+from evaluate.util import compute_pesq, compute_composite, compute_ssnr, sisdr, snr
 
 
 # This hack needed to import data preparation script from ..
@@ -63,97 +62,6 @@ if params.use_tensorboard:
 # Create the folder to save enhanced files
 if not os.path.exists(params.enhanced_folder):
     os.mkdir(params.enhanced_folder)
-
-
-def compute_pesq(pred_wavs, target_wavs, lengths):
-    pesq_scores = Parallel(n_jobs=30)(
-        delayed(pesq)(
-            fs=params.Sample_rate,
-            ref=clean[: int(length)],
-            deg=enhanced[: int(length)],
-            mode="wb",
-        )
-        for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
-    )
-    return pesq_scores
-
-
-def compute_composite(pred_wavs, target_wavs, lengths):
-    composites = Parallel(n_jobs=30)(
-        delayed(composite)(
-            fs=params.Sample_rate,
-            clean_speech=clean[: int(length)],
-            processed_speech=enhanced[: int(length)]
-        )
-        for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
-    )
-    csigs, cbaks, covls =[], [], []
-    for csig, cbak, covl in composites:
-        csigs.append(csig)
-        cbaks.append(cbak)
-        covls.append(covl)
-
-    return csigs, cbaks, covls
-
-
-def compute_ssnr(pred_wavs, target_wavs, lengths):
-    ssnrs = Parallel(n_jobs=30)(
-        delayed(SNRseg)(
-            fs=params.Sample_rate,
-            clean_speech=clean[: int(length)],
-            processed_speech=enhanced[: int(length)]
-        )
-        for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
-    )
-    return ssnrs
-
-
-def snr(pred_wavs, target_wavs, scale=True):
-    def rms(wavs):
-        return math.sqrt(torch.mean(torch.pow(wavs, 2)))
-
-    if scale:
-        target_wavs = target_wavs - torch.mean(target_wavs, 1, True).expand_as(target_wavs)
-        pred_wavs = pred_wavs - torch.mean(pred_wavs, 1, True).expand_as(pred_wavs)
-
-        target_wavs_max = torch.max(torch.abs(target_wavs), 1, True)[0]
-        pred_wavs_max = torch.max(torch.abs(pred_wavs), 1, True)[0]
-        pred_wavs = pred_wavs * (target_wavs_max / pred_wavs_max).expand_as(pred_wavs)
-
-    noise_wavs = pred_wavs.float() - target_wavs.float()
-    rms_signal = rms(target_wavs.float())
-    rms_noise = rms(noise_wavs)
-
-    snr_db = 20 * math.log(rms_signal/rms_noise) / math.log(10.)
-    return snr_db
-
-
-def sisdr(pred_wavs, target_wavs, zero_mean=True):
-    EPS = 1e-8
-
-    if target_wavs.size() != pred_wavs.size() or target_wavs.ndim != 2:
-        raise TypeError(
-            f"Inputs must be of shape [batch, time], got {target_wavs.size()} and {pred_wavs.size()} instead"
-        )
-    # Step 1. Zero-mean norm
-    if zero_mean:
-        mean_source = torch.mean(target_wavs, dim=1, keepdim=True)
-        mean_estimate = torch.mean(pred_wavs, dim=1, keepdim=True)
-        target_wavs = target_wavs - mean_source
-        pred_wavs = pred_wavs - mean_estimate
-
-    # [batch, 1]
-    dot = torch.sum(pred_wavs * target_wavs, dim=1, keepdim=True)
-    # [batch, 1]
-    s_target_energy = torch.sum(target_wavs ** 2, dim=1, keepdim=True) + EPS
-    # [batch, time]
-    scaled_target = dot * target_wavs / s_target_energy
-    e_noise = pred_wavs - scaled_target
-    # [batch]
-    sisdr = torch.sum(scaled_target ** 2, dim=1) / (torch.sum(e_noise ** 2, dim=1) + EPS)
-    sisdr = 10 * torch.log10(sisdr + EPS)
-    sisdr = sisdr.mean()
-    return sisdr
 
 
 def pad_batch(batch_input):
@@ -230,6 +138,29 @@ def pcm_loss(inputs, pred, gt, N=512):
     pcm = 0.5 * pred_sm + 0.5 * noise_sm
     return pcm
 
+def sisnr(x, s, eps=1e-8):
+    """
+    Arguments:
+    x: separated signal, N x S tensor
+    s: reference signal, N x S tensor
+    Return:
+    sisnr: N tensor
+    """
+
+    def l2norm(mat, keepdim=False):
+        return torch.norm(mat, dim=-1, keepdim=keepdim)
+
+    if x.shape != s.shape:
+        raise RuntimeError(
+            "Dimention mismatch when calculate si-snr, {} vs {}".format(
+                x.shape, s.shape))
+    x_zm = x - torch.mean(x, dim=-1, keepdim=True)
+    s_zm = s - torch.mean(s, dim=-1, keepdim=True)
+
+    t = torch.sum(x_zm * s_zm, dim=-1, keepdim=True) * s_zm / (l2norm(s_zm, keepdim=True)**2 + eps)
+    return 20 * torch.log10(eps + l2norm(t) / (l2norm(x_zm - t) + eps))
+
+
 
 if params.pretrained_model == "wav2vec":
     if params.wav2vec_version == 1.0:
@@ -298,25 +229,23 @@ def compute_features(x):
 
 
 def compute_features1(wavs):
-    wavs1 = wav2vec.feature_extractor(wavs)
+    feature_extractor = wav2vec.feature_extractor
 
-    # features = []
-    # wavs = wavs.unsqueeze(1)
-    #
-    # for i, conv in enumerate(feature_extractor.conv_layers):
-    #     residual = wavs
-    #     wavs = conv(wavs)
-    #     if feature_extractor.skip_connections and wavs.size(1) == residual.size(1):
-    #         tsz = wavs.size(2)
-    #         r_tsz = residual.size(2)
-    #         residual = residual[..., :: r_tsz // tsz][..., :tsz]
-    #         wavs = (wavs + residual) * feature_extractor.residual_scale
-    #
-    #     features.append(wavs)
+    features = []
+    wavs = wavs.unsqueeze(1)
 
-    wavs2 = wav2vec.feature_aggregator(wavs1)
+    for i, conv in enumerate(feature_extractor.conv_layers):
+        residual = wavs
+        wavs = conv(wavs)
+        if feature_extractor.skip_connections and wavs.size(1) == residual.size(1):
+            tsz = wavs.size(2)
+            r_tsz = residual.size(2)
+            residual = residual[..., :: r_tsz // tsz][..., :tsz]
+            wavs = (wavs + residual) * feature_extractor.residual_scale
 
-    return [wavs1, wavs2]
+        features.append(wavs)
+
+    return features
 
 
 def compute_features2(wavs):
@@ -374,7 +303,7 @@ params.train_dataset2.set_shapes(params.model.shapes)
 params.valid_dataset.set_shapes(params.model.shapes)
 params.test_dataset.set_shapes(params.model.shapes)
 
-if params.basic_loss == "MSE":
+if params.basic_loss == ("MSE""SISDR"):
     train_set = DataLoader(params.train_dataset,
                            batch_size=params.N_batch,
                            shuffle=True,
@@ -412,19 +341,22 @@ class SEBrain(sb.core.Brain):
     ):
         super(SEBrain, self).__init__(modules, optimizer, first_inputs, auto_mix_prec)
 
-        self.input_wavs = None
         if params.pretrained_model == "wav2vec":
             self.feature_weights = torch.ones(len(params.wav2vec_loss_layers), device=params.device)
 
         self.weights_ratio = params.weights_ratio
 
-    def compute_forward(self, x, stage="train", init_params=False):
-        _, self.input_wavs, _ = x
-        wavs = self.input_wavs.to(params.device)
+    def compute_forward(self, batch, stage="train", init_params=False):
+        inputs, targets = batch
+
+        _, input_wavs, _ = inputs
+        wavs = input_wavs.to(params.device)
         out = params.model(wavs)
         return out
 
-    def compute_objectives(self, pred_wavs, targets, stage="train"):
+    def compute_objectives(self, pred_wavs, batch, stage="train"):
+        inputs, targets = batch
+
         pred_wavs = torch.squeeze(pred_wavs, 1)
         pred_wavs = pred_wavs.to(params.device)
 
@@ -434,7 +366,7 @@ class SEBrain(sb.core.Brain):
         end = start + pred_wavs.shape[1]
         target_wavs = torch.squeeze(target_wavs, 1)[:, start:end]
 
-        input_wavs = self.input_wavs
+        _, input_wavs, _ = inputs
         input_wavs = input_wavs.to(params.device)
         if stage != "train":
             input_wavs = input_wavs.contiguous().view(1, 1, -1)
@@ -442,6 +374,9 @@ class SEBrain(sb.core.Brain):
 
         if params.basic_loss == "MSE":
             basic_loss = params.mse_cost(pred_wavs, target_wavs)
+        elif params.basic_loss == "SISDR":
+            sisdr_val = sisnr(pred_wavs, target_wavs)
+            basic_loss = -torch.mean(sisdr_val)
         else:
             batch_size = params.N_batch if stage == "train" else pred_wavs.shape[0]
             pred_wavs = pred_wavs.contiguous().view(batch_size, -1, pred_wavs.shape[1])
@@ -490,12 +425,14 @@ class SEBrain(sb.core.Brain):
                 pred_wavs.cpu().numpy(),
                 target_wavs.cpu().numpy(),
                 np.array([length]),
+                params.Sample_rate
             )
 
             ssnrs = compute_ssnr(
                 pred_wavs.cpu().numpy(),
                 target_wavs.cpu().numpy(),
                 np.array([length]),
+                params.Sample_rate
             )
 
             stats["basic_loss"] = basic_loss
@@ -514,6 +451,7 @@ class SEBrain(sb.core.Brain):
                     pred_wavs.cpu().numpy(),
                     target_wavs.cpu().numpy(),
                     np.array([length]),
+                    params.Sample_rate
                 )
                 stats["csigs"] = csigs
                 stats["cbaks"] = cbaks
@@ -557,8 +495,8 @@ class SEBrain(sb.core.Brain):
         """
         inputs, targets = batch
 
-        _, self.input_wavs, audio_length = inputs
-        input_wavs = self.input_wavs.to(params.device)
+        _, input_wavs, audio_length = inputs
+        input_wavs = input_wavs.to(params.device)
         pred_wavs = params.model(input_wavs)
         pred_wavs = pred_wavs.view(1, 1, pred_wavs.shape[0] * pred_wavs.shape[2])[:, :, :audio_length]
 
@@ -567,7 +505,7 @@ class SEBrain(sb.core.Brain):
         clean = torch.unsqueeze(clean, 1)
         targets = [name, clean, clean_length]
 
-        loss, stats = self.compute_objectives(pred_wavs, targets, stage=stage)
+        loss, stats = self.compute_objectives(pred_wavs, [inputs, targets], stage=stage)
         stats["loss"] = loss.detach()
         return stats
 
@@ -604,10 +542,10 @@ class SEBrain(sb.core.Brain):
 
 params.model.to(torch.device(params.device))
 
-first_x, first_y = next(iter(train_set))
+batch = next(iter(train_set))
 
 se_brain = SEBrain(
-    modules=[params.model], optimizer=params.optimizer, first_inputs=[first_x],
+    modules=[params.model], optimizer=params.optimizer, first_inputs=[batch],
 )
 
 # Load latest checkpoint to resume training

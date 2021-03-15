@@ -8,6 +8,7 @@ import soundfile as sf
 
 from joblib import Parallel, delayed
 from speechbrain.nnet.loss.stoi_loss import stoi_loss
+from evaluate.quality_measures import SNRseg, composite
 from pesq import pesq
 
 import numpy as np
@@ -15,12 +16,55 @@ import numpy as np
 # This hack needed to import data preparation script from ..
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(current_dir))
-from timit_prepare import get_samples  # noqa E402
+from prepare_data.hdf5_prepare import get_samples  # noqa E402
+
+
+def compute_pesq(pred_wavs, target_wavs, lengths, sr):
+    pesq_scores = Parallel(n_jobs=30)(
+        delayed(pesq)(
+            fs=sr,
+            ref=clean[: int(length)],
+            deg=enhanced[: int(length)],
+            mode="wb",
+        )
+        for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
+    )
+    return pesq_scores
+
+
+def compute_composite(pred_wavs, target_wavs, lengths, sr):
+    composites = Parallel(n_jobs=30)(
+        delayed(composite)(
+            fs=sr,
+            clean_speech=clean[: int(length)],
+            processed_speech=enhanced[: int(length)]
+        )
+        for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
+    )
+    csigs, cbaks, covls =[], [], []
+    for csig, cbak, covl in composites:
+        csigs.append(csig)
+        cbaks.append(cbak)
+        covls.append(covl)
+
+    return csigs, cbaks, covls
+
+
+def compute_ssnr(pred_wavs, target_wavs, lengths, sr):
+    ssnrs = Parallel(n_jobs=30)(
+        delayed(SNRseg)(
+            fs=sr,
+            clean_speech=clean[: int(length)],
+            processed_speech=enhanced[: int(length)]
+        )
+        for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
+    )
+    return ssnrs
 
 
 def snr(pred_wavs, target_wavs, scale=True):
     def rms(wavs):
-        return torch.sqrt(torch.mean(torch.pow(wavs, 2)))
+        return math.sqrt(torch.mean(torch.pow(wavs, 2)))
 
     if scale:
         target_wavs = target_wavs - torch.mean(target_wavs, 1, True).expand_as(target_wavs)
@@ -34,21 +78,36 @@ def snr(pred_wavs, target_wavs, scale=True):
     rms_signal = rms(target_wavs.float())
     rms_noise = rms(noise_wavs)
 
-    snr_db = 20 * torch.log(rms_signal/rms_noise) / math.log(10.)
+    snr_db = 20 * math.log(rms_signal/rms_noise) / math.log(10.)
     return snr_db
 
 
-def multiprocess_evaluation(pred_wavs, target_wavs, lengths, sample_rate):
-    pesq_scores = Parallel(n_jobs=30)(
-        delayed(pesq)(
-            fs=sample_rate,
-            ref=clean[: int(length)],
-            deg=enhanced[: int(length)],
-            mode="wb",
+def sisdr(pred_wavs, target_wavs, zero_mean=True):
+    EPS = 1e-8
+
+    if target_wavs.size() != pred_wavs.size() or target_wavs.ndim != 2:
+        raise TypeError(
+            f"Inputs must be of shape [batch, time], got {target_wavs.size()} and {pred_wavs.size()} instead"
         )
-        for enhanced, clean, length in zip(pred_wavs, target_wavs, lengths)
-    )
-    return pesq_scores
+    # Step 1. Zero-mean norm
+    if zero_mean:
+        mean_source = torch.mean(target_wavs, dim=1, keepdim=True)
+        mean_estimate = torch.mean(pred_wavs, dim=1, keepdim=True)
+        target_wavs = target_wavs - mean_source
+        pred_wavs = pred_wavs - mean_estimate
+
+    # [batch, 1]
+    dot = torch.sum(pred_wavs * target_wavs, dim=1, keepdim=True)
+    # [batch, 1]
+    s_target_energy = torch.sum(target_wavs ** 2, dim=1, keepdim=True) + EPS
+    # [batch, time]
+    scaled_target = dot * target_wavs / s_target_energy
+    e_noise = pred_wavs - scaled_target
+    # [batch]
+    sisdr = torch.sum(scaled_target ** 2, dim=1) / (torch.sum(e_noise ** 2, dim=1) + EPS)
+    sisdr = 10 * torch.log10(sisdr + EPS)
+    sisdr = sisdr.mean()
+    return sisdr
 
 
 def add_stats(dataset_stats, batch_stats):
@@ -80,15 +139,37 @@ def batch_stats(input_wavs, target_wavs, lens, sample_rate, device=None):
         target_wavs = target_wavs.to(torch.device(device))
         lens = lens.to(torch.device(device))
 
-    batch_stats = {}
-    batch_stats["snr"] = snr(input_wavs, target_wavs, False)
-    batch_stats["snr_scaled"] = snr(input_wavs, target_wavs)
-    batch_stats["pesq"] = multiprocess_evaluation(
+    pesq_scores = compute_pesq(
         input_wavs.cpu().numpy(),
         target_wavs.cpu().numpy(),
-        np.array([lengths]),
-        sample_rate
+        np.array([lens]),
+        sr
     )
+
+    ssnrs = compute_ssnr(
+        input_wavs.cpu().numpy(),
+        target_wavs.cpu().numpy(),
+        np.array([lens]),
+        sr
+    )
+
+
+    batch_stats = {}
+    batch_stats["snr"] = snr(input_wavs, target_wavs, False)
+    batch_stats["ssnrs"] = ssnrs
+    batch_stats['si_sdr'] = [sisdr(input_wavs, target_wavs)]
+    batch_stats["pesq"] = pesq_scores
+
+    csigs, cbaks, covls = compute_composite(
+        input_wavs.cpu().numpy(),
+        target_wavs.cpu().numpy(),
+        np.array([lens]),
+        sr
+    )
+    batch_stats["csigs"] = csigs
+    batch_stats["cbaks"] = cbaks
+    batch_stats["covls"] = covls
+
     batch_stats["stoi"] = -stoi_loss(input_wavs, target_wavs, torch.Tensor([lens])).unsqueeze(0)
 
     return batch_stats
@@ -98,7 +179,7 @@ def batch_stats(input_wavs, target_wavs, lens, sample_rate, device=None):
 if __name__ == '__main__':
     csv_file = sys.argv[1]
     enhanced_path = sys.argv[2]
-    snr_level = sys.argv[3]
+    snr_level = sys.argv[3] if len(sys.argv) > 3 else "all"
     batch_size = sys.argv[4] if len(sys.argv) > 4 else 1
     device = sys.argv[5] if len(sys.argv) > 5 else 'cuda:0'
 
@@ -113,8 +194,8 @@ if __name__ == '__main__':
     for idx, example in enumerate(tqdm(samples)):
         enhanced_name = example["ID"]
         # Load mix
-        noisy_audio, _ = sf.read(example["noisy_wav"])  # wavfile.read(example["noisy_wav"])
-        clean_audio, sr = sf.read(example["clean_wav"])  # wavfile.read(example["clean_wav"])
+        noisy_audio, _ = sf.read(os.path.join(enhanced_path, enhanced_name + "_noisy.wav"))  # wavfile.read(example["noisy_wav"])
+        clean_audio, sr = sf.read(os.path.join(enhanced_path, enhanced_name + "_clean.wav"))  # wavfile.read(example["clean_wav"])
         enhanced_audio, _ = sf.read(os.path.join(enhanced_path, enhanced_name + ".wav"))  # wavfile.read(os.path.join(enhanced_path, enhanced_name + ".wav"))
 
         noisy_wavs.append(noisy_audio)

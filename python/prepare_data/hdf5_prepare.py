@@ -1,7 +1,22 @@
 from tqdm import tqdm
-from utils import load
 import h5py
 import csv
+import librosa
+import numpy as np
+import torch
+
+
+def load(path, sr=16000, mono=True, mode="numpy", offset=0.0, duration=None):
+    y, curr_sr = librosa.load(path, sr=sr, mono=mono, res_type='kaiser_fast', offset=offset, duration=duration)
+
+    if len(y.shape) == 1:
+        # Expand channel dimension
+        y = y[np.newaxis, :]
+
+    if mode == "pytorch":
+        y = torch.tensor(y)
+
+    return y, curr_sr
 
 
 def get_samples(csv_path, snr_level="all"):
