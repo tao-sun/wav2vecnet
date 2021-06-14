@@ -1,0 +1,11 @@
+1. Create /home/data and copy TIMIT into it.
+2. run 'pip install -r requirements.txt' under speechbrain.
+3. run 'pip install --editable ./' under fairseq.
+
+
+1. Download and install speechbrain
+2. pesq
+3. Librosa
+4. Download and install fairseq
+5. tensorboard
+6. Add this project to $PYTHONPATH

@@ -6,8 +6,8 @@ import numpy as np
 import torch
 
 
-def load(path, sr=16000, mono=True, mode="numpy", offset=0.0, duration=None):
-    y, curr_sr = librosa.load(path, sr=sr, mono=mono, res_type='kaiser_fast', offset=offset, duration=duration)
+def load(path, mono=True, mode="numpy", offset=0.0, duration=None):
+    y, curr_sr = librosa.load(path, sr=None, mono=mono, res_type='kaiser_fast', offset=offset, duration=duration)
 
     if len(y.shape) == 1:
         # Expand channel dimension
@@ -62,8 +62,14 @@ def create_hdf5(csv_file, hdf_file, sample_rate, channels=1):
         print("Adding audio files to dataset (preprocessing)...")
         for idx, example in enumerate(tqdm(samples)):
             # Load mix
-            noisy_audio, _ = load(example["noisy_wav"], sr=sample_rate, mono=(channels == 1))
-            clean_audio, _ = load(example["clean_wav"], sr=sample_rate,  mono=(channels == 1))
+            noisy_audio, native_sr = load(example["noisy_wav"], mono=(channels == 1))
+            if native_sr != sample_rate:
+                noisy_audio = librosa.resample(noisy_audio, native_sr, sample_rate)
+                noisy_audio = librosa.normalize(noisy_audio)
+            clean_audio, native_sr = load(example["clean_wav"], mono=(channels == 1))
+            if native_sr != sample_rate:
+                clean_audio = librosa.resample(clean_audio, native_sr, sample_rate)
+                clean_audio = librosa.normalize(clean_audio)
             assert(noisy_audio.shape[1] == clean_audio.shape[1])
 
             # Add to HDF5 file

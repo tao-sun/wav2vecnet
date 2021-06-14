@@ -197,6 +197,9 @@ if __name__ == '__main__':
         noisy_audio, _ = sf.read(os.path.join(enhanced_path, enhanced_name + "_noisy.wav"))  # wavfile.read(example["noisy_wav"])
         clean_audio, sr = sf.read(os.path.join(enhanced_path, enhanced_name + "_clean.wav"))  # wavfile.read(example["clean_wav"])
         enhanced_audio, _ = sf.read(os.path.join(enhanced_path, enhanced_name + ".wav"))  # wavfile.read(os.path.join(enhanced_path, enhanced_name + ".wav"))
+        # noisy_audio, sr = sf.read(example["noisy_wav"])
+        # clean_audio, _ = sf.read(example["clean_wav"])
+        # enhanced_audio, _ = sf.read(example["noisy_wav"])
 
         noisy_wavs.append(noisy_audio)
         clean_wavs.append(clean_audio)
@@ -228,5 +231,5 @@ if __name__ == '__main__':
 
     summary = {}
     for stat, value_list in dataset_stats.items():
-            summary[stat] = summarize_average(value_list)
+        summary[stat] = summarize_average(value_list)
     print(summary)

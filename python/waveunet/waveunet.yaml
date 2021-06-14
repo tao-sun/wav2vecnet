@@ -11,13 +11,14 @@ save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 enhanced_folder: !ref <output_folder>/enhanced
 
-pretrained_model: "pase"  # "dfl", "wav2vec", or "pase"
+pretrained_model: "rawnet"  # "dfl", "wav2vec", "pase", or "rawnet"
 
 # Wav2vec version
-wav2vec_version: 1.0  #* MAzBio vs. AzBio
+wav2vec_version: 2.0  #* MAzBio vs. AzBio  1.0, 2.0 or xlsr
 wav2vec1_model: ./data/pretrained/wav2vec_large.pt
-wav2vec2_model: ./data/pretrained/libri960_big.pt
-wav2vec_loss_layers: [0, 1]  #* MAzBio vs. AzBio
+wav2vec2_model: ./data/pretrained/wav2vec_vox_new.pt
+xlsr_model: ./data/pretrained/xlsr_53_56k.pt
+wav2vec_loss_layers: [0, 1, 2]  #* MAzBio vs. AzBio
 
 set_weights_epoch: 1
 
@@ -28,6 +29,9 @@ dfl_layers: 6
 # pase
 pase_model: ./data/pretrained/FE_e199.ckpt
 pase_cfg: ./data/pretrained/PASE+.cfg
+
+# rawnet
+rawnet_model: ./data/pretrained/rawnet2_best_weights.pt
 
 # Basic parameters
 use_tensorboard: False
@@ -44,10 +48,10 @@ hdf5_valid: !ref <data_folder>/valid.hdf5
 
 # Training Parameters
 combined_loss: True
-weights_ratio: 1.00:0.01
-basic_loss: MSE # MSE, SM, RI, or PCM
+weights_ratio: 0.99:0.01
+basic_loss: MSE # MSE, SM, RI, PCM, or SISDR
 number_of_epochs: 150
-N_batch: 30 # TIMIT
+N_batch: 15 # TIMIT
 lr: 0.0001
 weight_decay: 0.001
 Sample_rate: 16000

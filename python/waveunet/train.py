@@ -26,12 +26,16 @@ import soundfile as sf
 from utils import worker_init_fn
 
 from dfl.network import FeatureNet
+from rawnet.model_RawNet2_original_code import RawNet
+from rawnet.parser import get_args
+
 import torch.nn.functional as F
 import torch.utils.data._utils.collate as collate
 from prepare_data.timit_prepare import prepare_timit
 from prepare_data.voicebank_prepare import prepare_voicebank
 from prepare_data.hdf5_prepare import create_hdf5
 
+import fairseq
 from fairseq.models.wav2vec import Wav2VecModel, Wav2Vec2Model
 from evaluate.util import compute_pesq, compute_composite, compute_ssnr, sisdr, snr
 
@@ -138,6 +142,7 @@ def pcm_loss(inputs, pred, gt, N=512):
     pcm = 0.5 * pred_sm + 0.5 * noise_sm
     return pcm
 
+
 def sisnr(x, s, eps=1e-8):
     """
     Arguments:
@@ -161,57 +166,44 @@ def sisnr(x, s, eps=1e-8):
     return 20 * torch.log10(eps + l2norm(t) / (l2norm(x_zm - t) + eps))
 
 
-
 if params.pretrained_model == "wav2vec":
     if params.wav2vec_version == 1.0:
         cp = torch.load(params.wav2vec1_model)
-        wav2vec = Wav2VecModel.build_model(cp['args'], task=None)
-        wav2vec.load_state_dict(cp['model'])
-        if params.use_device2 and torch.cuda.device_count() > 1:
-            wav2vec.to(torch.device(params.device2))
-        else:
-            wav2vec.to(torch.device(params.device))
-        for param in wav2vec.parameters():
-            param.requires_grad = False
-        wav2vec.eval()
+        pretrained = Wav2VecModel.build_model(cp['args'], task=None)
+        pretrained.load_state_dict(cp['model'])
     elif params.wav2vec_version == 2.0:
-        cp = torch.load(params.wav2vec2_model)
-        wav2vec2 = Wav2Vec2Model.build_model(cp['args'])
-        wav2vec2.load_state_dict(cp['model'])
-
-        if params.use_device2 and torch.cuda.device_count() > 1:
-            wav2vec2.to(torch.device(params.device2))
-        else:
-            wav2vec2.to(torch.device(params.device))
-
-        for param in wav2vec2.parameters():
-            param.requires_grad = False
-        wav2vec2.eval()
+        cp_path = params.wav2vec2_model
+        model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
+        pretrained = model[0]
+        # cp = torch.load(params.wav2vec2_model)
+        # wav2vec = Wav2Vec2Model.build_model(cp['args'], task=None)
+        # wav2vec.load_state_dict(cp['model'])
+    elif params.wav2vec_version == "xlsr":
+        cp_path = params.xlsr_model
+        model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
+        pretrained = model[0]
 elif params.pretrained_model == "dfl":
-    featurenet = FeatureNet(2, [15, 7], [1, 2])
-    featurenet.load_state_dict(torch.load(params.dfl_model))
-    if params.use_device2 and torch.cuda.device_count() > 1:
-        featurenet.to(torch.device(params.device2))
-    else:
-        featurenet.to(torch.device(params.device))
-    for param in featurenet.parameters():
-        param.requires_grad = False
-    featurenet.eval()
+    pretrained = FeatureNet(2, [15, 7], [1, 2])
+    pretrained.load_state_dict(torch.load(params.dfl_model))
 elif params.pretrained_model == "pase":
     from pase.models.frontend import wf_builder
-    pase = wf_builder(params.pase_cfg).eval()
-    pase.load_pretrained(params.pase_model, load_last=True, verbose=True)
-
-    if params.use_device2 and torch.cuda.device_count() > 1:
-        pase.to(torch.device(params.device2))
-    else:
-        pase.to(torch.device(params.device))
-    for param in pase.parameters():
-        param.requires_grad = False
-    pase.eval()
-
+    pretrained = wf_builder(params.pase_cfg).eval()
+    pretrained.load_pretrained(params.pase_model, load_last=True, verbose=True)
+elif params.pretrained_model == "rawnet":
+    args = get_args()
+    args.model['nb_classes'] = 6112
+    pretrained = RawNet(args.model)
+    pretrained.load_state_dict(torch.load(params.rawnet_model))
 else:
     raise Exception("Illegal 'pretrained_model' set in the .yaml file! Please choose from 'wav2vec' and 'dfl'.")
+
+if params.use_device2 and torch.cuda.device_count() > 1:
+    pretrained.to(torch.device(params.device2))
+else:
+    pretrained.to(torch.device(params.device))
+for param in pretrained.parameters():
+    param.requires_grad = False
+pretrained.eval()
 
 
 def compute_features(x):
@@ -219,16 +211,18 @@ def compute_features(x):
         x = x.to(params.device2)
     if params.pretrained_model == "wav2vec":
         if params.wav2vec_version == 1.0:
-            return compute_features1(x)
-        elif params.wav2vec_version == 2.0:
-            return compute_features2(x)
+            return compute_features1(x, pretrained)
+        elif (params.wav2vec_version == 2.0) or (params.wav2vec_version == "xlsr"):
+            return compute_features2(x, pretrained)
     elif params.pretrained_model == "dfl":
-        return compute_features_dfl(x)
+        return compute_features_dfl(x, pretrained)
     elif params.pretrained_model == "pase":
-        return compute_features_pase(x)
+        return compute_features_pase(x, pretrained)
+    elif params.pretrained_model == "rawnet":
+        return compute_features_rawnet(x, pretrained)
 
 
-def compute_features1(wavs):
+def compute_features1(wavs, wav2vec):
     feature_extractor = wav2vec.feature_extractor
 
     features = []
@@ -248,7 +242,7 @@ def compute_features1(wavs):
     return features
 
 
-def compute_features2(wavs):
+def compute_features2(wavs, wav2vec2):
     feature_extractor = wav2vec2.feature_extractor
 
     features = []
@@ -260,7 +254,7 @@ def compute_features2(wavs):
     return features
 
 
-def compute_features_dfl(wavs):
+def compute_features_dfl(wavs, featurenet):
     features = []
 
     wavs = wavs.view(wavs.shape[0], 1, wavs.shape[1])
@@ -274,9 +268,47 @@ def compute_features_dfl(wavs):
     return features
 
 
-def compute_features_pase(wavs):
-    wavs = pase(torch.unsqueeze(wavs, 1))
+def compute_features_pase(wavs, pase_model):
+    wavs = pase_model(torch.unsqueeze(wavs, 1))
     return [wavs]
+
+
+def compute_features_rawnet(wavs, rawnet):
+    features = []
+
+
+    d_len_seq = rawnet.len_seq
+    nb_samp = wavs.shape[0]
+    len_seq = wavs.shape[1]
+
+    if len_seq < d_len_seq:
+        wavs = F.pad(wavs, (0, d_len_seq - len_seq), "constant", 0)
+    else:
+        wavs = wavs[:, :d_len_seq]
+    len_seq = d_len_seq
+
+    x = rawnet.ln(wavs)
+    x = x.view(nb_samp, 1, len_seq)
+    x = F.max_pool1d(torch.abs(rawnet.first_conv(x)), 3)
+    x = rawnet.first_bn(x)
+    x = rawnet.lrelu_keras(x)
+    features.append(x)
+
+    x0 = rawnet.block0(x)
+    y0 = rawnet.avgpool(x0).view(x0.size(0), -1)  # torch.Size([batch, filter])
+    y0 = rawnet.fc_attention0(y0)
+    y0 = rawnet.sig(y0).view(y0.size(0), y0.size(1), -1)  # torch.Size([batch, filter, 1])
+    x = x0 * y0 + y0  # (batch, filter, time) x (batch, filter, 1)
+    features.append(x)
+
+    x1 = rawnet.block1(x)
+    y1 = rawnet.avgpool(x1).view(x1.size(0), -1)  # torch.Size([batch, filter])
+    y1 = rawnet.fc_attention1(y1)
+    y1 = rawnet.sig(y1).view(y1.size(0), y1.size(1), -1)  # torch.Size([batch, filter, 1])
+    x = x1 * y1 + y1  # (batch, filter, time) x (batch, filter, 1)
+    features.append(x)
+
+    return features
 
 
 # Prepare data
@@ -303,7 +335,7 @@ params.train_dataset2.set_shapes(params.model.shapes)
 params.valid_dataset.set_shapes(params.model.shapes)
 params.test_dataset.set_shapes(params.model.shapes)
 
-if params.basic_loss == ("MSE""SISDR"):
+if params.basic_loss == ("MSE" or "SISDR"):
     train_set = DataLoader(params.train_dataset,
                            batch_size=params.N_batch,
                            shuffle=True,
@@ -316,7 +348,8 @@ else:
                            shuffle=True,
                            collate_fn=pad_batch,
                            num_workers=1,
-                           worker_init_fn=worker_init_fn)
+                           worker_init_fn=worker_init_fn,
+                           drop_last=True)
 valid_set = DataLoader(params.valid_dataset,
                        batch_size=None,
                        shuffle=False,
@@ -379,6 +412,9 @@ class SEBrain(sb.core.Brain):
             basic_loss = -torch.mean(sisdr_val)
         else:
             batch_size = params.N_batch if stage == "train" else pred_wavs.shape[0]
+
+            if (pred_wavs.shape[0] * pred_wavs.shape[1]) % (batch_size * pred_wavs.shape[1]) != 0:
+                print(pred_wavs.shape)
             pred_wavs = pred_wavs.contiguous().view(batch_size, -1, pred_wavs.shape[1])
             pred_wavs = pred_wavs.contiguous().view(batch_size, -1)
             target_wavs = target_wavs.contiguous().view(batch_size, -1, target_wavs.shape[1])
@@ -411,9 +447,15 @@ class SEBrain(sb.core.Brain):
                     self.effective_feature_losses[idx] = feature_losses[layer_num]
                 total_feature_loss = torch.sum(self.effective_feature_losses / self.feature_weights)
 
+            # predicted_features_pase = compute_features_pase(pred_wavs)
+            # target_features_pase = compute_features_pase(target_wavs)
+            # pase_feature_loss = params.mse_cost(predicted_features_pase[0], target_features_pase[0])
+            # feature_losses.append(pase_feature_loss)
+
             if params.combined_loss:
                 r1, r2 = self.weights_ratio.split(":")
-                loss = float(r1) * basic_loss + float(r2) * total_feature_loss.to(params.device)
+                loss = float(r1) * basic_loss + float(r2) * total_feature_loss.to(params.device)  # + \
+                       # 0.005 * pase_feature_loss.to(params.device)
             else:
                 loss = basic_loss
         else:
