@@ -26,8 +26,6 @@ import soundfile as sf
 from utils import worker_init_fn
 
 from dfl.network import FeatureNet
-from rawnet.model_RawNet2_original_code import RawNet
-from rawnet.parser import get_args
 
 import torch.nn.functional as F
 import torch.utils.data._utils.collate as collate
@@ -190,10 +188,22 @@ elif params.pretrained_model == "pase":
     pretrained = wf_builder(params.pase_cfg).eval()
     pretrained.load_pretrained(params.pase_model, load_last=True, verbose=True)
 elif params.pretrained_model == "rawnet":
+    from rawnet.model_RawNet2_original_code import RawNet
+    from rawnet.parser import get_args
     args = get_args()
     args.model['nb_classes'] = 6112
     pretrained = RawNet(args.model)
     pretrained.load_state_dict(torch.load(params.rawnet_model))
+elif params.pretrained_model == "audioset_tagging_cnn":
+    from audioset_tagging_cnn import parser, config
+    from audioset_tagging_cnn.models import Cnn14, Wavegram_Cnn14
+    args = parser.get_args()
+    pretrained = Cnn14(sample_rate=args.sample_rate, window_size=args.window_size,
+                       hop_size=args.hop_size, mel_bins=args.mel_bins, fmin=args.fmin, fmax=args.fmax,
+                       classes_num=config.classes_num)
+
+    checkpoint = torch.load(params.audioset_tagging_cnn_model)
+    pretrained.load_state_dict(checkpoint['model'])
 else:
     raise Exception("Illegal 'pretrained_model' set in the .yaml file! Please choose from 'wav2vec' and 'dfl'.")
 
@@ -220,6 +230,8 @@ def compute_features(x):
         return compute_features_pase(x, pretrained)
     elif params.pretrained_model == "rawnet":
         return compute_features_rawnet(x, pretrained)
+    elif params.pretrained_model == "audioset_tagging_cnn":
+        return compute_features_audioset_tagging_cnn(x, pretrained)
 
 
 def compute_features1(wavs, wav2vec):
@@ -309,6 +321,29 @@ def compute_features_rawnet(wavs, rawnet):
     features.append(x)
 
     return features
+
+
+def compute_features_audioset_tagging_cnn(wavs, audioset_tagging_cnn):
+    x = audioset_tagging_cnn.spectrogram_extractor(wavs)  # (batch_size, 1, time_steps, freq_bins)
+    x = audioset_tagging_cnn.logmel_extractor(x)  # (batch_size, 1, time_steps, mel_bins)
+
+    x = x.transpose(1, 3)
+    x = audioset_tagging_cnn.bn0(x)
+    x = x.transpose(1, 3)
+
+    if audioset_tagging_cnn.training:
+        x = audioset_tagging_cnn.spec_augmenter(x)
+
+    x = audioset_tagging_cnn.conv_block1(x, pool_size=(2, 2), pool_type='avg')
+    x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
+    x = audioset_tagging_cnn.conv_block2(x, pool_size=(2, 2), pool_type='avg')
+    x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
+    x = audioset_tagging_cnn.conv_block3(x, pool_size=(2, 2), pool_type='avg')
+    x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
+    x = audioset_tagging_cnn.conv_block4(x, pool_size=(2, 2), pool_type='avg')
+    x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
+
+    return x
 
 
 # Prepare data

@@ -11,7 +11,7 @@ save_folder: !ref <output_folder>/save
 train_log: !ref <output_folder>/train_log.txt
 enhanced_folder: !ref <output_folder>/enhanced
 
-pretrained_model: "rawnet"  # "dfl", "wav2vec", "pase", or "rawnet"
+pretrained_model: "audioset_tagging_cnn"  # "dfl", "wav2vec", "pase", or "rawnet"
 
 # Wav2vec version
 wav2vec_version: 2.0  #* MAzBio vs. AzBio  1.0, 2.0 or xlsr
@@ -33,6 +33,9 @@ pase_cfg: ./data/pretrained/PASE+.cfg
 # rawnet
 rawnet_model: ./data/pretrained/rawnet2_best_weights.pt
 
+# audioset_tagging_cnn
+audioset_tagging_cnn_model: ./data/pretrained/Cnn14_16k.pth
+
 # Basic parameters
 use_tensorboard: False
 tensorboard_logs: !ref <output_folder>/logs/
@@ -51,7 +54,7 @@ combined_loss: True
 weights_ratio: 0.99:0.01
 basic_loss: MSE # MSE, SM, RI, PCM, or SISDR
 number_of_epochs: 150
-N_batch: 15 # TIMIT
+N_batch: 30 # TIMIT
 lr: 0.0001
 weight_decay: 0.001
 Sample_rate: 16000
