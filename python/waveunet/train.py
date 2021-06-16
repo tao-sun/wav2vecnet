@@ -162,195 +162,8 @@ def sisnr(x, s, eps=1e-8):
     return 20 * torch.log10(eps + l2norm(t) / (l2norm(x_zm - t) + eps))
 
 
-if params.pretrained_model == "wav2vec":
-    if params.wav2vec_version == 1.0:
-        cp = torch.load(params.wav2vec1_model)
-        pretrained = Wav2VecModel.build_model(cp['args'], task=None)
-        pretrained.load_state_dict(cp['model'])
-    elif params.wav2vec_version == 2.0:
-        cp_path = params.wav2vec2_model
-        model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
-        pretrained = model[0]
-        # cp = torch.load(params.wav2vec2_model)
-        # wav2vec = Wav2Vec2Model.build_model(cp['args'], task=None)
-        # wav2vec.load_state_dict(cp['model'])
-    elif params.wav2vec_version == "xlsr":
-        cp_path = params.xlsr_model
-        model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
-        pretrained = model[0]
-elif params.pretrained_model == "dfl":
-    pretrained = FeatureNet(2, [15, 7], [1, 2])
-    pretrained.load_state_dict(torch.load(params.dfl_model))
-elif params.pretrained_model == "pase":
-    from pase.models.frontend import wf_builder
-    pretrained = wf_builder(params.pase_cfg).eval()
-    pretrained.load_pretrained(params.pase_model, load_last=True, verbose=True)
-elif params.pretrained_model == "rawnet":
-    from rawnet.model_RawNet2_original_code import RawNet
-    from rawnet.parser import get_args
-    args = get_args()
-    args.model['nb_classes'] = 6112
-    pretrained = RawNet(args.model)
-    pretrained.load_state_dict(torch.load(params.rawnet_model))
-elif params.pretrained_model == "audioset_tagging_cnn":
-    from audioset_tagging_cnn import parser, config
-    from audioset_tagging_cnn.models import Cnn14, Wavegram_Cnn14
-    args = parser.get_args()
-    pretrained = Cnn14(sample_rate=args.sample_rate, window_size=args.window_size,
-                       hop_size=args.hop_size, mel_bins=args.mel_bins, fmin=args.fmin, fmax=args.fmax,
-                       classes_num=config.classes_num)
-
-    checkpoint = torch.load(params.audioset_tagging_cnn_model)
-    pretrained.load_state_dict(checkpoint['model'])
-else:
-    raise Exception("Illegal 'pretrained_model' set in the .yaml file! Please choose from 'wav2vec' and 'dfl'.")
-
-if params.use_device2 and torch.cuda.device_count() > 1:
-    pretrained.to(torch.device(params.device2))
-else:
-    pretrained.to(torch.device(params.device))
-for param in pretrained.parameters():
-    param.requires_grad = False
-pretrained.eval()
-
-
-def compute_features(x):
-    if params.use_device2 and torch.cuda.device_count() > 1:
-        x = x.to(params.device2)
-    if params.pretrained_model == "wav2vec":
-        if params.wav2vec_version == 1.0:
-            return compute_features1(x, pretrained)
-        elif (params.wav2vec_version == 2.0) or (params.wav2vec_version == "xlsr"):
-            return compute_features2(x, pretrained)
-    elif params.pretrained_model == "dfl":
-        return compute_features_dfl(x, pretrained)
-    elif params.pretrained_model == "pase":
-        return compute_features_pase(x, pretrained)
-    elif params.pretrained_model == "rawnet":
-        return compute_features_rawnet(x, pretrained)
-    elif params.pretrained_model == "audioset_tagging_cnn":
-        return compute_features_audioset_tagging_cnn(x, pretrained)
-
-
-def compute_features1(wavs, wav2vec):
-    feature_extractor = wav2vec.feature_extractor
-
-    features = []
-    wavs = wavs.unsqueeze(1)
-
-    for i, conv in enumerate(feature_extractor.conv_layers):
-        residual = wavs
-        wavs = conv(wavs)
-        if feature_extractor.skip_connections and wavs.size(1) == residual.size(1):
-            tsz = wavs.size(2)
-            r_tsz = residual.size(2)
-            residual = residual[..., :: r_tsz // tsz][..., :tsz]
-            wavs = (wavs + residual) * feature_extractor.residual_scale
-
-        features.append(wavs)
-
-    return features
-
-
-def compute_features2(wavs, wav2vec2):
-    feature_extractor = wav2vec2.feature_extractor
-
-    features = []
-    wavs = wavs.unsqueeze(1)
-    for i, conv in enumerate(feature_extractor.conv_layers):
-        wavs = conv(wavs)
-        features.append(wavs)
-
-    return features
-
-
-def compute_features_dfl(wavs, featurenet):
-    features = []
-
-    wavs = wavs.view(wavs.shape[0], 1, wavs.shape[1])
-    for i in range(1, params.dfl_layers + 1):
-        conv_layer = getattr(featurenet, "conv" + str(i))
-        norm_layer = getattr(featurenet, "batnorm" + str(i))
-
-        wavs = conv_layer(wavs)
-        wavs = F.leaky_relu(norm_layer(wavs))
-        features.append(wavs)
-    return features
-
-
-def compute_features_pase(wavs, pase_model):
-    wavs = pase_model(torch.unsqueeze(wavs, 1))
-    return [wavs]
-
-
-def compute_features_rawnet(wavs, rawnet):
-    features = []
-
-    d_len_seq = rawnet.len_seq
-    nb_samp = wavs.shape[0]
-    len_seq = wavs.shape[1]
-
-    if len_seq < d_len_seq:
-        wavs = F.pad(wavs, (0, d_len_seq - len_seq), "constant", 0)
-    else:
-        wavs = wavs[:, :d_len_seq]
-    len_seq = d_len_seq
-
-    x = rawnet.ln(wavs)
-    x = x.view(nb_samp, 1, len_seq)
-    x = F.max_pool1d(torch.abs(rawnet.first_conv(x)), 3)
-    x = rawnet.first_bn(x)
-    x = rawnet.lrelu_keras(x)
-    features.append(x)
-
-    x0 = rawnet.block0(x)
-    y0 = rawnet.avgpool(x0).view(x0.size(0), -1)  # torch.Size([batch, filter])
-    y0 = rawnet.fc_attention0(y0)
-    y0 = rawnet.sig(y0).view(y0.size(0), y0.size(1), -1)  # torch.Size([batch, filter, 1])
-    x = x0 * y0 + y0  # (batch, filter, time) x (batch, filter, 1)
-    features.append(x)
-
-    x1 = rawnet.block1(x)
-    y1 = rawnet.avgpool(x1).view(x1.size(0), -1)  # torch.Size([batch, filter])
-    y1 = rawnet.fc_attention1(y1)
-    y1 = rawnet.sig(y1).view(y1.size(0), y1.size(1), -1)  # torch.Size([batch, filter, 1])
-    x = x1 * y1 + y1  # (batch, filter, time) x (batch, filter, 1)
-    features.append(x)
-
-    return features
-
-
-def compute_features_audioset_tagging_cnn(wavs, audioset_tagging_cnn):
-    features = []
-
-    x = audioset_tagging_cnn.spectrogram_extractor(wavs)  # (batch_size, 1, time_steps, freq_bins)
-    x = audioset_tagging_cnn.logmel_extractor(x)  # (batch_size, 1, time_steps, mel_bins)
-
-    x = x.transpose(1, 3)
-    x = audioset_tagging_cnn.bn0(x)
-    x = x.transpose(1, 3)
-
-    if audioset_tagging_cnn.training:
-        x = audioset_tagging_cnn.spec_augmenter(x)
-
-    x = audioset_tagging_cnn.conv_block1(x, pool_size=(2, 2), pool_type='avg')
-    x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
-    features.append(x)
-
-    x = audioset_tagging_cnn.conv_block2(x, pool_size=(2, 2), pool_type='avg')
-    x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
-    features.append(x)
-
-    x = audioset_tagging_cnn.conv_block3(x, pool_size=(2, 2), pool_type='avg')
-    x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
-    features.append(x)
-
-    x = audioset_tagging_cnn.conv_block4(x, pool_size=(2, 2), pool_type='avg')
-    x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
-    features.append(x)
-
-    return features
-
+pretrained_model = params.pretrained_model
+pretrained = FeatureLossFactory.get_model(pretrained_model["name"])
 
 # Prepare data
 if params.dataset == "TIMIT":
@@ -471,12 +284,21 @@ class SEBrain(sb.core.Brain):
                 basic_loss = pcm_loss(input_wavs, pred_wavs, target_wavs)
 
         if params.combined_loss or stage != "train":
-            predicted_features = compute_features(pred_wavs)
-            target_features = compute_features(target_wavs)
+            predicted_features = FeatureLossFactory.compute_features(pretrained_model["name"],
+                                                                     pred_wavs,
+                                                                     pretrained)
+            target_features = FeatureLossFactory.compute_features(pretrained_model["name"],
+                                                                  target_wavs,
+                                                                  pretrained)
 
             feature_losses = []
             total_feature_loss = 0.0
-            for i in range(len(predicted_features)):
+
+            if pretrained_model['layers']:
+                feature_layers = pretrained_model['layers']
+            else:
+                feature_layers = range(len(predicted_features))
+            for i in feature_layers:
                 feature_loss = params.mse_cost(predicted_features[i], target_features[i])
                 feature_losses.append(feature_loss)
                 if params.pretrained_model != "wav2vec":
