@@ -18,7 +18,7 @@ wav2vec_version: 2.0  #* MAzBio vs. AzBio  1.0, 2.0 or xlsr
 wav2vec1_model: ./data/pretrained/wav2vec_large.pt
 wav2vec2_model: ./data/pretrained/wav2vec_vox_new.pt
 xlsr_model: ./data/pretrained/xlsr_53_56k.pt
-wav2vec_loss_layers: [0, 1, 2]  #* MAzBio vs. AzBio
+wav2vec_loss_layers: [6]  #* MAzBio vs. AzBio
 
 set_weights_epoch: 1
 

@@ -25,17 +25,15 @@ import soundfile as sf
 
 from utils import worker_init_fn
 
-from dfl.network import FeatureNet
-
 import torch.nn.functional as F
 import torch.utils.data._utils.collate as collate
 from prepare_data.timit_prepare import prepare_timit
 from prepare_data.voicebank_prepare import prepare_voicebank
 from prepare_data.hdf5_prepare import create_hdf5
 
-import fairseq
-from fairseq.models.wav2vec import Wav2VecModel, Wav2Vec2Model
 from evaluate.util import compute_pesq, compute_composite, compute_ssnr, sisdr, snr
+
+from feature_loss_factory import FeatureLossFactory
 
 
 # This hack needed to import data preparation script from ..
@@ -288,7 +286,6 @@ def compute_features_pase(wavs, pase_model):
 def compute_features_rawnet(wavs, rawnet):
     features = []
 
-
     d_len_seq = rawnet.len_seq
     nb_samp = wavs.shape[0]
     len_seq = wavs.shape[1]
@@ -324,6 +321,8 @@ def compute_features_rawnet(wavs, rawnet):
 
 
 def compute_features_audioset_tagging_cnn(wavs, audioset_tagging_cnn):
+    features = []
+
     x = audioset_tagging_cnn.spectrogram_extractor(wavs)  # (batch_size, 1, time_steps, freq_bins)
     x = audioset_tagging_cnn.logmel_extractor(x)  # (batch_size, 1, time_steps, mel_bins)
 
@@ -336,14 +335,21 @@ def compute_features_audioset_tagging_cnn(wavs, audioset_tagging_cnn):
 
     x = audioset_tagging_cnn.conv_block1(x, pool_size=(2, 2), pool_type='avg')
     x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
+    features.append(x)
+
     x = audioset_tagging_cnn.conv_block2(x, pool_size=(2, 2), pool_type='avg')
     x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
+    features.append(x)
+
     x = audioset_tagging_cnn.conv_block3(x, pool_size=(2, 2), pool_type='avg')
     x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
+    features.append(x)
+
     x = audioset_tagging_cnn.conv_block4(x, pool_size=(2, 2), pool_type='avg')
     x = F.dropout(x, p=0.2, training=audioset_tagging_cnn.training)
+    features.append(x)
 
-    return x
+    return features
 
 
 # Prepare data
